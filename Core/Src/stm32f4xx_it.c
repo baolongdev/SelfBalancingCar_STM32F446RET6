@@ -21,6 +21,7 @@
 #include "main.h"
 #include "stm32f4xx_it.h"
 #include "usart.h"
+#include "app/app_main.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
@@ -204,6 +205,11 @@ void SysTick_Handler(void)
   */
 void USART1_IRQHandler(void)
 {
+  if (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_RXNE) != RESET &&
+      __HAL_UART_GET_IT_SOURCE(&huart1, UART_IT_RXNE) != RESET)
+  {
+    AppMain_UartRxByteFromISR((uint8_t)(huart1.Instance->DR & 0xFFU));
+  }
   HAL_UART_IRQHandler(&huart1);
 }
 

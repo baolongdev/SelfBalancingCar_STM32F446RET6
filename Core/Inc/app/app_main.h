@@ -30,6 +30,9 @@ void AppMain_TurnRight(uint8_t speed_percent);
 void AppMain_Stop(void);
 void AppMain_SetBalanceEnabled(uint8_t enabled);
 void AppMain_SetBalanceAlgorithm(uint8_t algorithm);
+void AppMain_UartRxByteFromISR(uint8_t byte);
+void AppMain_UpdateWheelEncoderTicks(int32_t left_ticks, int32_t right_ticks,
+                                     uint32_t timestamp_ms);
 
 #ifdef __cplusplus
 }

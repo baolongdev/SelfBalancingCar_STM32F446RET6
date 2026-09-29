@@ -4,6 +4,7 @@
 #include "modules/control/led_manager.h"
 #include "modules/control/balance_manager.hpp"
 #include "modules/control/motor.h"
+#include "modules/control/wheel_encoder.h"
 #include "modules/logging/uart_logger.hpp"
 #include "modules/sensors/icm20948.h"
 #include "tim.h"
@@ -16,16 +17,29 @@
 namespace
 {
 MotorController_t g_motor_controller;
+WheelEncoder_t g_left_encoder;
+WheelEncoder_t g_right_encoder;
 ICM20948_t g_imu;
 uint32_t g_next_imu_sample_ms;
 uint32_t g_last_imu_sample_ms;
 BalanceManager g_balance_manager;
 BalanceInput g_balance_input{};
 uint8_t g_balance_enable_requested;
-uint8_t g_uart_command_ready;
+volatile uint8_t g_uart_command_ready;
 uint8_t g_uart_command_overflow;
 uint16_t g_uart_command_length;
 char g_uart_command_buffer[256];
+volatile uint16_t g_uart_rx_head;
+volatile uint16_t g_uart_rx_tail;
+volatile uint32_t g_uart_rx_dropped;
+uint8_t g_uart_rx_ring[512];
+static const float kComplementaryGyroWeight = 0.985f;
+/* Verified from the current mechanical orientation: balance uses roll/Gyro-X. */
+static const float kBalanceAngleSign = 1.0f;
+static const float kBalanceGyroSign = 1.0f;
+/* Fill these after the encoder timer/pin mapping is confirmed on the PCB. */
+static const float kEncoderCountsPerRev = 0.0f;
+static const float kWheelCircumferenceM = 0.0f;
 
 static void BalanceLogConfig()
 {
@@ -282,10 +296,10 @@ static void ProcessUartCommands()
 
 static void PollUartCommandInput()
 {
-  while (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_RXNE) != RESET)
+  while (g_uart_command_ready == 0U && g_uart_rx_tail != g_uart_rx_head)
   {
-    const uint8_t byte = (uint8_t)(huart1.Instance->DR & 0xFFU);
-    if (g_uart_command_ready != 0U) continue;
+    const uint8_t byte = g_uart_rx_ring[g_uart_rx_tail];
+    g_uart_rx_tail = (uint16_t)((g_uart_rx_tail + 1U) % sizeof(g_uart_rx_ring));
     if (byte == '\n' || byte == '\r')
     {
       if (g_uart_command_overflow != 0U)
@@ -311,11 +325,27 @@ static void PollUartCommandInput()
       g_uart_command_length = 0U;
     }
   }
-  if (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_ORE) != RESET)
-  {
-    __HAL_UART_CLEAR_OREFLAG(&huart1);
-  }
 }
+}
+
+extern "C" void AppMain_UartRxByteFromISR(uint8_t byte)
+{
+  const uint16_t next = (uint16_t)((g_uart_rx_head + 1U) % sizeof(g_uart_rx_ring));
+  if (next == g_uart_rx_tail)
+  {
+    g_uart_rx_dropped++;
+    return;
+  }
+  g_uart_rx_ring[g_uart_rx_head] = byte;
+  g_uart_rx_head = next;
+}
+
+extern "C" void AppMain_UpdateWheelEncoderTicks(int32_t left_ticks,
+                                                  int32_t right_ticks,
+                                                  uint32_t timestamp_ms)
+{
+  WheelEncoder_UpdateCount(&g_left_encoder, left_ticks, timestamp_ms);
+  WheelEncoder_UpdateCount(&g_right_encoder, right_ticks, timestamp_ms);
 }
 
 extern "C" void AppMain_Init(void)
@@ -327,6 +357,12 @@ extern "C" void AppMain_Init(void)
   g_uart_command_length = 0U;
   g_uart_command_ready = 0U;
   g_uart_command_overflow = 0U;
+  g_uart_rx_head = 0U;
+  g_uart_rx_tail = 0U;
+  g_uart_rx_dropped = 0U;
+  WheelEncoder_Init(&g_left_encoder, kEncoderCountsPerRev, kWheelCircumferenceM);
+  WheelEncoder_Init(&g_right_encoder, kEncoderCountsPerRev, kWheelCircumferenceM);
+  __HAL_UART_ENABLE_IT(&huart1, UART_IT_RXNE);
 
   HAL_StatusTypeDef imu_status = ICM20948_Init(&g_imu, &hi2c1, ICM20948_ADDRESS_AD0_LOW);
   if (imu_status != HAL_OK)
@@ -343,6 +379,17 @@ extern "C" void AppMain_Init(void)
   else
   {
     LOGI("IMU", "ICM-20948 ready");
+    if (ICM20948_CalibrateGyro(&g_imu, 100U, 2U) == HAL_OK)
+    {
+      LOGI("IMU", "gyro bias calibrated bx_cdps=%ld by_cdps=%ld bz_cdps=%ld",
+           (long)(g_imu.gyro_bias_dps[0] * 100.0f),
+           (long)(g_imu.gyro_bias_dps[1] * 100.0f),
+           (long)(g_imu.gyro_bias_dps[2] * 100.0f));
+    }
+    else
+    {
+      LOGW("IMU", "gyro calibration failed; using raw bias correction");
+    }
   }
   g_next_imu_sample_ms = HAL_GetTick();
   g_last_imu_sample_ms = g_next_imu_sample_ms;
@@ -365,7 +412,7 @@ extern "C" void AppMain_Init(void)
   MotorController_SetDirectionSafety(&g_motor_controller, 80U, 40U);
   /* Ngưỡng khởi động motor là 45%; giữ ngưỡng chạy 10% để balance còn
      điều khiển được các hiệu chỉnh nhỏ quanh điểm thẳng đứng. */
-  MotorController_SetMinDrivePercent(&g_motor_controller, 45U, 10U);
+  MotorController_SetMinDrivePercent(&g_motor_controller, 25U, 8U);
   /* Pin đặt cao làm hệ có quán tính lớn; tăng tốc độ ramp để PWM bắt kịp
      khi góc lệch tăng nhanh. */
   MotorController_SetCustomSlew(&g_motor_controller, 1000U, 1400U);
@@ -400,23 +447,25 @@ extern "C" void AppMain_Loop(void)
       g_last_imu_sample_ms = now_ms;
       g_balance_input.timestamp_ms = now_ms;
       g_balance_input.dt_s = (float)(now_ms - previous_sample_ms) / 1000.0f;
-      g_balance_input.imu_valid = 1U;
+    g_balance_input.imu_valid = 1U;
+      (void)ICM20948_UpdateComplementaryFilter(&g_imu, g_balance_input.dt_s,
+                                                kComplementaryGyroWeight);
       /* Với cách lắp GY-ICM20948V2 hiện tại, trục nghiêng trước/sau của xe
          thể hiện trên roll (Ay/Az), vì vậy phải dùng gyro X tương ứng. Dùng
          pitch/gyro Y ở đây khiến PID vẫn có output nhưng không phản ứng đúng
          với hướng nghiêng thực tế của xe. */
-      g_balance_input.angle_deg = g_imu.roll_deg;
-      g_balance_input.angular_rate_dps = g_imu.gyro_dps[0];
-      g_balance_input.left_speed = 0.0f;
-      g_balance_input.right_speed = 0.0f;
-      g_balance_input.left_position = 0.0f;
-      g_balance_input.right_position = 0.0f;
+      g_balance_input.angle_deg = kBalanceAngleSign * g_imu.filtered_roll_deg;
+      g_balance_input.angular_rate_dps = kBalanceGyroSign * g_imu.gyro_dps[0];
+      g_balance_input.left_speed = WheelEncoder_GetSpeed(&g_left_encoder);
+      g_balance_input.right_speed = WheelEncoder_GetSpeed(&g_right_encoder);
+      g_balance_input.left_position = WheelEncoder_GetPosition(&g_left_encoder);
+      g_balance_input.right_position = WheelEncoder_GetPosition(&g_right_encoder);
       g_balance_input.battery_voltage = 0.0f;
 
       /* Tự kích hoạt khi IMU hợp lệ và xe còn trong vùng an toàn. Khi góc
          vượt cutoff, BalanceManager sẽ latch fault và phía dưới dừng motor. */
       if (g_balance_enable_requested != 0U &&
-          fabsf(g_imu.roll_deg) < g_balance_manager.config().tilt_cutoff_deg)
+           fabsf(g_imu.filtered_roll_deg) < g_balance_manager.config().tilt_cutoff_deg)
       {
         g_balance_manager.setEnabled(1U);
       }
@@ -442,7 +491,7 @@ extern "C" void AppMain_Loop(void)
         0x20948U,
         200U,
         "roll_cdeg=%ld pitch_cdeg=%ld gyroX_cdps=%ld gyroY_cdps=%ld gyroZ_cdps=%ld ax_mg=%ld ay_mg=%ld az_mg=%ld",
-        (long)(g_imu.roll_deg * 100.0f),
+         (long)(g_imu.filtered_roll_deg * 100.0f),
         (long)(g_imu.pitch_deg * 100.0f),
         (long)(g_imu.gyro_dps[0] * 100.0f),
         (long)(g_imu.gyro_dps[1] * 100.0f),

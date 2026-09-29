@@ -156,7 +156,7 @@ HAL_StatusTypeDef ICM20948_Read(ICM20948_t *imu)
     imu->accel_raw[axis] = ICM20948_Int16(&data[axis * 2U]);
     imu->gyro_raw[axis] = ICM20948_Int16(&data[6U + axis * 2U]);
     imu->accel_g[axis] = (float)imu->accel_raw[axis] / ICM20948_ACCEL_LSB_PER_G;
-    imu->gyro_dps[axis] = (float)imu->gyro_raw[axis] / ICM20948_GYRO_LSB_PER_DPS;
+    imu->gyro_dps[axis] = ((float)imu->gyro_raw[axis] / ICM20948_GYRO_LSB_PER_DPS) - imu->gyro_bias_dps[axis];
   }
 
   imu->roll_deg = atan2f(imu->accel_g[1],
@@ -166,6 +166,52 @@ HAL_StatusTypeDef ICM20948_Read(ICM20948_t *imu)
                           sqrtf((imu->accel_g[1] * imu->accel_g[1]) +
                                 (imu->accel_g[2] * imu->accel_g[2]))) * ICM20948_RAD_TO_DEG;
 
+  return HAL_OK;
+}
+
+HAL_StatusTypeDef ICM20948_CalibrateGyro(ICM20948_t *imu, uint16_t samples, uint32_t sample_delay_ms)
+{
+  float sum[3] = {0.0f, 0.0f, 0.0f};
+  if ((imu == NULL) || (imu->initialized == 0U) || (samples == 0U)) return HAL_ERROR;
+
+  imu->filter_initialized = 0U;
+  for (uint16_t sample = 0U; sample < samples; sample++)
+  {
+    HAL_StatusTypeDef status = ICM20948_Read(imu);
+    if (status != HAL_OK) return status;
+    for (uint8_t axis = 0U; axis < 3U; axis++)
+    {
+      sum[axis] += (float)imu->gyro_raw[axis] / ICM20948_GYRO_LSB_PER_DPS;
+    }
+    if (sample_delay_ms != 0U) HAL_Delay(sample_delay_ms);
+  }
+  for (uint8_t axis = 0U; axis < 3U; axis++)
+  {
+    imu->gyro_bias_dps[axis] = sum[axis] / (float)samples;
+  }
+  imu->filter_initialized = 0U;
+  return HAL_OK;
+}
+
+HAL_StatusTypeDef ICM20948_UpdateComplementaryFilter(ICM20948_t *imu, float dt_s, float gyro_weight)
+{
+  if ((imu == NULL) || (imu->initialized == 0U) || (dt_s <= 0.0f) || (dt_s > 0.1f)) return HAL_ERROR;
+  if (gyro_weight < 0.0f) gyro_weight = 0.0f;
+  if (gyro_weight > 1.0f) gyro_weight = 1.0f;
+
+  if (imu->filter_initialized == 0U)
+  {
+    imu->filtered_roll_deg = imu->roll_deg;
+    imu->filtered_pitch_deg = imu->pitch_deg;
+    imu->filter_initialized = 1U;
+  }
+  else
+  {
+    const float gyro_roll = imu->filtered_roll_deg + imu->gyro_dps[0] * dt_s;
+    const float gyro_pitch = imu->filtered_pitch_deg + imu->gyro_dps[1] * dt_s;
+    imu->filtered_roll_deg = gyro_weight * gyro_roll + (1.0f - gyro_weight) * imu->roll_deg;
+    imu->filtered_pitch_deg = gyro_weight * gyro_pitch + (1.0f - gyro_weight) * imu->pitch_deg;
+  }
   return HAL_OK;
 }
 

@@ -50,8 +50,16 @@ ANGLE SENSOR: GY-ICM20948V2
 - Accelerometer    : +/-2 g
 - Gyroscope        : +/-250 dps
 - Firmware sample  : 250 Hz, one sample every 4 ms
-- IMU data used    : accelerometer angle, gyroscope Y rate for balance,
-                     gyroscope Z rate for relative yaw observation
+- IMU data used    : complementary-filtered roll angle, bias-corrected
+                     gyroscope X rate for balance; gyroscope Z remains
+                     available for relative yaw observation
+
+WHEEL ENCODERS
+------------------------------------------------------------
+- Firmware support : software count/speed/position module implemented
+- Timer/GPIO pins  : not assigned yet; requires the encoder board wiring
+- Configuration    : counts per revolution and wheel circumference in app_main.cpp
+- Do not reuse PB0/PC13 as encoder inputs without updating the hardware map
 
 DEBUG UART
 ------------------------------------------------------------

@@ -10,10 +10,10 @@ BalanceConfig BalanceManager::DefaultConfig()
   BalanceConfig c{};
   c.algorithm = BalanceAlgorithm::PID;
   c.target_angle_deg = 0.0f;
-  c.max_output_percent = 65.0f;
-  c.boost_start_deg = 5.0f;
-  c.boost_max_output_percent = 95.0f;
-  c.tilt_cutoff_deg = 80.0f;
+  c.max_output_percent = 55.0f;
+  c.boost_start_deg = 8.0f;
+  c.boost_max_output_percent = 70.0f;
+  c.tilt_cutoff_deg = 35.0f;
   c.tilt_recover_deg = 10.0f;
   c.stale_timeout_ms = 20U;
   c.invert_output = 0U;
@@ -103,7 +103,8 @@ float BalanceManager::computeStateFeedback(const BalanceInput &input)
 {
   const float speed = 0.5f * (input.left_speed + input.right_speed);
   const float position = 0.5f * (input.left_position + input.right_position);
-  return -((config_.state_feedback.angle_gain * input.angle_deg) +
+  const float angle_error = config_.target_angle_deg - input.angle_deg;
+  return -((config_.state_feedback.angle_gain * angle_error) +
            (config_.state_feedback.angular_rate_gain * input.angular_rate_dps) +
            (config_.state_feedback.speed_gain * speed) +
            (config_.state_feedback.position_gain * position));

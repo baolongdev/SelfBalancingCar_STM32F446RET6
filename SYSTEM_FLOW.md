@@ -8,14 +8,14 @@ The current firmware baseline provides:
 
 - I2C1 communication with the ICM-20948 on PB6/PB7.
 - Accelerometer and gyroscope initialization and burst reading.
-- Roll/pitch calculation from accelerometer data.
+- Roll/pitch calculation with gyro bias correction and a complementary filter.
 - A fixed 250 Hz IMU sampling schedule.
 - Differential motor PWM control through TIM2.
 - UART1 diagnostic logging at 115200 baud.
 - A `BalanceManager` interface with PID, PD and state-feedback algorithm modes.
 - Safety handling for invalid/stale IMU data and excessive tilt.
 
-The `BalanceManager` implementation and the 250 Hz scheduler hook are present in the current source tree, but balance output is disabled by default for safety. The current application still starts in manual/open-loop motor mode until the IMU orientation and gains are validated. FreeRTOS middleware is not installed yet; the current scheduler hook is the HAL timebase loop.
+The `BalanceManager` implementation and the 250 Hz scheduler hook are present in the current source tree. The current application retains its existing automatic balance-enable behavior after a valid IMU sample. FreeRTOS middleware is not installed yet; the current scheduler hook is the HAL timebase loop.
 
 ## 2. Hardware and software data flow
 
@@ -24,14 +24,14 @@ GY-ICM20948V2
       │ I2C1: PB6/PB7, 400 kHz
       ▼
 ICM20948 driver
-      │ raw accel + raw gyro
+      │ calibrated accel + bias-corrected gyro
       ▼
 Angle conversion
-      │ roll, pitch, gyro rate
+      │ filtered roll/pitch, gyro rate
       ├──────────────► UART1 diagnostic log
       │
       ▼
-Balance controller (`BalanceManager`, disabled by default)
+      Balance controller (`BalanceManager`)
       │ left/right correction
       ▼
 Motor controller
@@ -86,7 +86,7 @@ AppMain_Init()
 Main loop
 ```
 
-If the ICM-20948 is not detected at either address, initialization enters `Error_Handler()` and the system does not start the motor controller. This prevents uncontrolled motor operation without valid attitude feedback.
+If the ICM-20948 is not detected at either address, the application keeps UART diagnostics alive and rejects IMU reads. Balance output is not valid until a sensor sample is available.
 
 ## 5. Current sampling design
 
@@ -115,7 +115,7 @@ Read transaction    = 14 data bytes, accel + gyro + temperature block
 
 ## 6. Angle calculation and filtering
 
-The driver currently calculates static roll and pitch from the accelerometer:
+The driver calculates static roll and pitch from the accelerometer, calibrates gyro bias while stationary at startup, and combines gyro integration with accelerometer correction using a complementary filter. The balance axis is currently the physical roll/Gyro-X axis selected for the installed GY-ICM20948V2 orientation.
 
 ```text
 roll  = atan2(ay, sqrt(ax² + az²))
@@ -201,11 +201,11 @@ For the first FreeRTOS version, an IMU task can read and publish a single latest
 1. Confirm ICM-20948 detection and address.
 2. Log raw accelerometer and gyro values while the chassis is still.
 3. Confirm roll/pitch axis direction and zero offset.
-4. Add gyro bias calibration during startup while the robot is stationary.
-5. Add complementary filter and validate angle stability.
+4. Validate the startup gyro bias calibration while the robot is stationary.
+5. Validate the complementary filter and the roll/Gyro-X sign with the wheels lifted.
 6. Add PID with motors lifted off the ground.
-7. Add saturation, deadband, command timeout and emergency stop.
-8. Enable FreeRTOS task separation.
+7. Tune saturation and motor deadband at low output.
+8. Connect the encoder timer/callback and configure counts per revolution.
 9. Tune PID on the floor at low battery and nominal battery voltage.
 
 ## 10. BalanceManager interface
@@ -224,10 +224,10 @@ Each update provides:
 | `timestamp_ms` | ms | `HAL_GetTick()` |
 | `dt_s` | s | Difference between IMU samples |
 | `imu_valid` | boolean | ICM-20948 read result |
-| `angle_deg` | degree | ICM-20948 pitch |
-| `angular_rate_dps` | degree/s | ICM-20948 gyro Y |
-| `left/right_speed` | application unit | Reserved for encoders |
-| `left/right_position` | application unit | Reserved for encoders |
+| `angle_deg` | degree | Complementary-filtered ICM-20948 roll |
+| `angular_rate_dps` | degree/s | Bias-corrected ICM-20948 gyro X |
+| `left/right_speed` | m/s | Wheel encoder module |
+| `left/right_position` | m | Wheel encoder module |
 | `battery_voltage` | V | Reserved for ADC/battery monitor |
 
 ### Output contract
@@ -244,7 +244,7 @@ Each update provides:
 | `saturated` | Output reached configured maximum |
 | `active` | Output is safe to apply to the motors |
 
-Supported modes are `Disabled`, `PID`, `PD` and `StateFeedback`. The state-feedback mode accepts angle, angular-rate, wheel-speed and wheel-position gains; encoder values are currently zero until encoder hardware is added.
+Supported modes are `Disabled`, `PID`, `PD` and `StateFeedback`. The state-feedback mode accepts angle, angular-rate, wheel-speed and wheel-position gains. The encoder module is ready for timer/callback counts; its runtime values remain zero until the board-specific encoder pins are configured.
 
 The public app controls are:
 
@@ -255,7 +255,7 @@ AppMain_SetBalanceAlgorithm(2);        // PD
 AppMain_SetBalanceAlgorithm(3);        // state feedback
 ```
 
-The balance mode must remain disabled until the pitch axis, sign convention, zero angle and gyro bias have been verified with the wheels lifted.
+Before floor testing, verify the roll/Gyro-X axis, sign convention, zero angle and gyro bias with the wheels lifted. The current firmware keeps the existing automatic balance-enable behavior requested for this project.
 
 ## 11. Current implementation status
 
@@ -267,13 +267,13 @@ The balance mode must remain disabled until the pitch axis, sign convention, zer
 | Accel/gyro raw reading | Implemented |
 | 250 Hz application sampling | Implemented |
 | Angle calculation | Implemented, unfiltered |
-| BalanceManager PID/PD/state feedback | Implemented, disabled by default |
+| BalanceManager PID/PD/state feedback | Implemented |
 | IMU and balance diagnostic logging | Implemented, rate-limited |
-| Complementary filter | Planned |
+| Complementary filter | Implemented |
 | Balance loop enable | Available through `AppMain_SetBalanceEnabled()` |
 | FreeRTOS middleware | Not installed |
 | FreeRTOS task split | Architecture defined |
-| Encoder feedback | Not configured |
+| Encoder feedback | Software module ready; timer/pins pending board wiring |
 
 ## 12. References
 
