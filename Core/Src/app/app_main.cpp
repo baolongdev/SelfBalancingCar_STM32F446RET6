@@ -104,24 +104,24 @@ extern "C" void AppMain_Loop(void)
         "IMU",
         0x20948U,
         200U,
-        "roll=%.2f pitch=%.2f gyroY=%.2f ax=%.3f ay=%.3f az=%.3f",
-        (double)g_imu.roll_deg,
-        (double)g_imu.pitch_deg,
-        (double)g_imu.gyro_dps[1],
-        (double)g_imu.accel_g[0],
-        (double)g_imu.accel_g[1],
-        (double)g_imu.accel_g[2]);
+        "roll_cdeg=%ld pitch_cdeg=%ld gyroY_cdps=%ld ax_mg=%ld ay_mg=%ld az_mg=%ld",
+        (long)(g_imu.roll_deg * 100.0f),
+        (long)(g_imu.pitch_deg * 100.0f),
+        (long)(g_imu.gyro_dps[1] * 100.0f),
+        (long)(g_imu.accel_g[0] * 1000.0f),
+        (long)(g_imu.accel_g[1] * 1000.0f),
+        (long)(g_imu.accel_g[2] * 1000.0f));
 
       logger.logRateLimited(
         LogLevel::Debug,
         "BAL",
         0xBA1A1U,
         200U,
-        "alg=%s en=%u err=%.2f out=%.2f fault=0x%08lx",
+        "alg=%s en=%u err_cdeg=%ld out_cpercent=%ld fault=0x%08lx",
         BalanceManager::AlgorithmName(balance_output.algorithm),
         (unsigned int)g_balance_manager.enabled(),
-        (double)balance_output.angle_error_deg,
-        (double)balance_output.correction_percent,
+        (long)(balance_output.angle_error_deg * 100.0f),
+        (long)(balance_output.correction_percent * 100.0f),
         (unsigned long)balance_output.faults);
     }
     else
