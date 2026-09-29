@@ -7,7 +7,7 @@
 <script src="vendor/plotly-2.35.2.min.js"></script>
 <script src="vendor/tailwindcss.cdn.js"></script>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#f5f5f5;color:#111;font-family:Inter,ui-sans-serif,system-ui,sans-serif}.plot{height:250px;min-height:0;width:100%}#chartGrid{grid-auto-rows:280px}#chartGrid article{min-width:0;overflow:hidden}#log{height:100%;overflow:auto;white-space:pre-wrap}.dot{width:8px;height:8px;border-radius:999px;background:#a3a3a3;display:inline-block}.dot.on{background:#111;box-shadow:0 0 0 3px #d4d4d4}.dot.err{background:#525252}
+*{box-sizing:border-box}body{margin:0;background:#f5f5f5;color:#111;font-family:Inter,ui-sans-serif,system-ui,sans-serif}.plot{height:270px;min-height:0;width:100%}#chartGrid{grid-auto-rows:310px}#chartGrid article{min-width:0;overflow:hidden}#log{height:100%;overflow:auto;white-space:pre-wrap}.dot{width:8px;height:8px;border-radius:999px;background:#a3a3a3;display:inline-block}.dot.on{background:#111;box-shadow:0 0 0 3px #d4d4d4}.dot.err{background:#525252}@media(max-width:640px){.plot{height:255px}#chartGrid{grid-auto-rows:295px}}
 </style>
 </head>
 <body class="h-screen w-screen overflow-hidden bg-neutral-100 text-neutral-950 antialiased">
@@ -26,7 +26,7 @@
 'use strict';
 const MAX_ROWS=12000,rows=[];let port=null,reader=null,availablePorts=[],keepReading=false,paused=false,demoTimer=null,rawBuffer='',lineCounter=0,lineRateTick=performance.now();
 const $=id=>document.getElementById(id),colors={cyan:'#2563eb',amber:'#dc2626',green:'#0f766e',red:'#b91c1c',purple:'#7c3aed',blue:'#0891b2',black:'#111827',orange:'#d97706',gray:'#6b7280'};
-const baseLayout=(title,range)=>({paper_bgcolor:'#ffffff',plot_bgcolor:'#ffffff',margin:{l:52,r:16,t:8,b:36},font:{color:'#171717',size:11},hovermode:'x unified',showlegend:true,legend:{orientation:'h',y:1.12,x:0},xaxis:{title:'time (s)',gridcolor:'#e5e5e5',zerolinecolor:'#a3a3a3'},yaxis:{title,range,gridcolor:'#e5e5e5',zerolinecolor:'#a3a3a3'}});
+const baseLayout=(title,range)=>({paper_bgcolor:'#ffffff',plot_bgcolor:'#ffffff',margin:{l:58,r:16,t:18,b:58},font:{color:'#171717',size:11},hovermode:'x unified',showlegend:true,legend:{orientation:'h',y:1.16,x:0},xaxis:{title:'time (s)',automargin:true,gridcolor:'#e5e5e5',zerolinecolor:'#a3a3a3'},yaxis:{title,range,automargin:true,gridcolor:'#e5e5e5',zerolinecolor:'#a3a3a3'}});
 const emptyTrace=(name,color)=>({x:[],y:[],name,mode:'lines',line:{color,width:1.6}});
 Plotly.newPlot('anglePlot',[emptyTrace('roll °',colors.cyan),emptyTrace('pitch °',colors.amber),emptyTrace('gyro Y °/s',colors.black)],baseLayout('degrees / dps'),{responsive:true,displaylogo:false});
 Plotly.newPlot('yawPlot',[emptyTrace('yaw °',colors.blue),emptyTrace('gyro Z °/s',colors.purple)],baseLayout('degrees / dps'),{responsive:true,displaylogo:false});
