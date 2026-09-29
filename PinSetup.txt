@@ -50,7 +50,8 @@ ANGLE SENSOR: GY-ICM20948V2
 - Accelerometer    : +/-2 g
 - Gyroscope        : +/-250 dps
 - Firmware sample  : 250 Hz, one sample every 4 ms
-- IMU data used    : accelerometer angle and gyroscope Y rate
+- IMU data used    : accelerometer angle, gyroscope Y rate for balance,
+                     gyroscope Z rate for relative yaw observation
 
 DEBUG UART
 ------------------------------------------------------------

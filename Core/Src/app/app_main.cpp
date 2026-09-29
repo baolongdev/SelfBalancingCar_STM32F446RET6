@@ -104,10 +104,11 @@ extern "C" void AppMain_Loop(void)
         "IMU",
         0x20948U,
         200U,
-        "roll_cdeg=%ld pitch_cdeg=%ld gyroY_cdps=%ld ax_mg=%ld ay_mg=%ld az_mg=%ld",
+        "roll_cdeg=%ld pitch_cdeg=%ld gyroY_cdps=%ld gyroZ_cdps=%ld ax_mg=%ld ay_mg=%ld az_mg=%ld",
         (long)(g_imu.roll_deg * 100.0f),
         (long)(g_imu.pitch_deg * 100.0f),
         (long)(g_imu.gyro_dps[1] * 100.0f),
+        (long)(g_imu.gyro_dps[2] * 100.0f),
         (long)(g_imu.accel_g[0] * 1000.0f),
         (long)(g_imu.accel_g[1] * 1000.0f),
         (long)(g_imu.accel_g[2] * 1000.0f));
