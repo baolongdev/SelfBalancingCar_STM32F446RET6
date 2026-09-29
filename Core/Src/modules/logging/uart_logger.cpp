@@ -412,4 +412,3 @@ extern "C" void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   UartLogger::instance().onErrorFromISR(huart);
 }
-

@@ -23,6 +23,8 @@ typedef struct
   float roll_deg;
   float pitch_deg;
   uint8_t initialized;
+  uint8_t last_status;
+  uint32_t last_i2c_error;
 } ICM20948_t;
 
 HAL_StatusTypeDef ICM20948_Init(ICM20948_t *imu, I2C_HandleTypeDef *hi2c, uint16_t address);

@@ -37,10 +37,17 @@ static HAL_StatusTypeDef ICM20948_Write(ICM20948_t *imu, uint8_t reg, uint8_t va
 }
 
 static HAL_StatusTypeDef ICM20948_ReadRegisters(ICM20948_t *imu, uint8_t reg,
-                                                 uint8_t *data, uint16_t length)
+                                                  uint8_t *data, uint16_t length)
 {
   return HAL_I2C_Mem_Read(imu->hi2c, imu->address, reg, I2C_MEMADD_SIZE_8BIT,
                           data, length, ICM20948_TIMEOUT_MS);
+}
+
+static HAL_StatusTypeDef ICM20948_InitFailure(ICM20948_t *imu)
+{
+  imu->last_status = (uint8_t)HAL_ERROR;
+  imu->last_i2c_error = (imu->hi2c != NULL) ? HAL_I2C_GetError(imu->hi2c) : HAL_I2C_ERROR_NONE;
+  return HAL_ERROR;
 }
 
 static int16_t ICM20948_Int16(const uint8_t *data)
@@ -54,28 +61,35 @@ HAL_StatusTypeDef ICM20948_Init(ICM20948_t *imu, I2C_HandleTypeDef *hi2c, uint16
 
   if ((imu == NULL) || (hi2c == NULL))
   {
+    if (imu != NULL)
+    {
+      imu->last_status = (uint8_t)HAL_ERROR;
+      imu->last_i2c_error = HAL_I2C_ERROR_NONE;
+    }
     return HAL_ERROR;
   }
 
   memset(imu, 0, sizeof(*imu));
   imu->hi2c = hi2c;
   imu->address = address;
+  imu->last_status = HAL_OK;
+  imu->last_i2c_error = HAL_I2C_ERROR_NONE;
 
   if (HAL_I2C_IsDeviceReady(imu->hi2c, imu->address, 3U, ICM20948_TIMEOUT_MS) != HAL_OK)
   {
-    return HAL_ERROR;
+    return ICM20948_InitFailure(imu);
   }
 
   if (ICM20948_SelectBank(imu, ICM20948_BANK0) != HAL_OK ||
       ICM20948_ReadRegisters(imu, ICM20948_REG_WHO_AM_I, &who_am_i, 1U) != HAL_OK ||
       who_am_i != ICM20948_WHO_AM_I_VALUE)
   {
-    return HAL_ERROR;
+    return ICM20948_InitFailure(imu);
   }
 
   if (ICM20948_Write(imu, ICM20948_REG_PWR_MGMT_1, 0x80U) != HAL_OK)
   {
-    return HAL_ERROR;
+    return ICM20948_InitFailure(imu);
   }
   HAL_Delay(100U);
 
@@ -83,7 +97,7 @@ HAL_StatusTypeDef ICM20948_Init(ICM20948_t *imu, I2C_HandleTypeDef *hi2c, uint16
       ICM20948_Write(imu, ICM20948_REG_PWR_MGMT_2, 0x00U) != HAL_OK ||
       ICM20948_SelectBank(imu, ICM20948_BANK2) != HAL_OK)
   {
-    return HAL_ERROR;
+    return ICM20948_InitFailure(imu);
   }
 
   /* Gyro: 250 dps, 1 kHz output; accel: 2 g, 1 kHz output. */
@@ -94,27 +108,48 @@ HAL_StatusTypeDef ICM20948_Init(ICM20948_t *imu, I2C_HandleTypeDef *hi2c, uint16
       ICM20948_Write(imu, ICM20948_REG_ACCEL_CONFIG, 0x01U) != HAL_OK ||
       ICM20948_SelectBank(imu, ICM20948_BANK0) != HAL_OK)
   {
-    return HAL_ERROR;
+    return ICM20948_InitFailure(imu);
   }
 
   imu->initialized = 1U;
+  imu->last_status = (uint8_t)HAL_OK;
+  imu->last_i2c_error = HAL_I2C_ERROR_NONE;
   return HAL_OK;
 }
 
 HAL_StatusTypeDef ICM20948_Read(ICM20948_t *imu)
 {
   uint8_t data[14];
+  HAL_StatusTypeDef status;
 
   if ((imu == NULL) || (imu->initialized == 0U))
   {
+    if (imu != NULL)
+    {
+      imu->last_status = (uint8_t)HAL_ERROR;
+      imu->last_i2c_error = (imu->hi2c != NULL) ? HAL_I2C_GetError(imu->hi2c) : HAL_I2C_ERROR_NONE;
+    }
     return HAL_ERROR;
   }
 
-  if (ICM20948_SelectBank(imu, ICM20948_BANK0) != HAL_OK ||
-      ICM20948_ReadRegisters(imu, ICM20948_REG_ACCEL_XOUT_H, data, sizeof(data)) != HAL_OK)
+  status = ICM20948_SelectBank(imu, ICM20948_BANK0);
+  if (status != HAL_OK)
   {
-    return HAL_ERROR;
+    imu->last_status = (uint8_t)status;
+    imu->last_i2c_error = HAL_I2C_GetError(imu->hi2c);
+    return status;
   }
+
+  status = ICM20948_ReadRegisters(imu, ICM20948_REG_ACCEL_XOUT_H, data, sizeof(data));
+  if (status != HAL_OK)
+  {
+    imu->last_status = (uint8_t)status;
+    imu->last_i2c_error = HAL_I2C_GetError(imu->hi2c);
+    return status;
+  }
+
+  imu->last_status = HAL_OK;
+  imu->last_i2c_error = HAL_I2C_ERROR_NONE;
 
   for (uint8_t axis = 0U; axis < 3U; axis++)
   {

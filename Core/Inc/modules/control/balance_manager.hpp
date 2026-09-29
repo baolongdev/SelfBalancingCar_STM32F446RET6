@@ -55,6 +55,8 @@ struct BalanceConfig
   BalanceAlgorithm algorithm;
   float target_angle_deg;
   float max_output_percent;
+  float boost_start_deg;
+  float boost_max_output_percent;
   float tilt_cutoff_deg;
   float tilt_recover_deg;
   uint32_t stale_timeout_ms;
@@ -83,6 +85,7 @@ public:
 private:
   float computePid(const BalanceInput &input, float error);
   float computeStateFeedback(const BalanceInput &input);
+  float outputLimitForAngle(float angle_error_deg) const;
   void forceSafeOutput(uint32_t faults);
   static float clamp(float value, float minimum, float maximum);
 

@@ -10,8 +10,10 @@ BalanceConfig BalanceManager::DefaultConfig()
   BalanceConfig c{};
   c.algorithm = BalanceAlgorithm::PID;
   c.target_angle_deg = 0.0f;
-  c.max_output_percent = 55.0f;
-  c.tilt_cutoff_deg = 30.0f;
+  c.max_output_percent = 65.0f;
+  c.boost_start_deg = 5.0f;
+  c.boost_max_output_percent = 95.0f;
+  c.tilt_cutoff_deg = 80.0f;
   c.tilt_recover_deg = 10.0f;
   c.stale_timeout_ms = 20U;
   c.invert_output = 0U;
@@ -31,9 +33,19 @@ void BalanceManager::reset()
              BALANCE_FAULT_NOT_ENABLED, 0U, 0U};
 }
 
-void BalanceManager::setConfig(const BalanceConfig &config) { config_ = config; integral_ = 0.0f; }
+void BalanceManager::setConfig(const BalanceConfig &config)
+{
+  config_ = config;
+  integral_ = 0.0f;
+  tilt_latched_ = 0U;
+}
 const BalanceConfig &BalanceManager::config() const { return config_; }
-void BalanceManager::setAlgorithm(BalanceAlgorithm algorithm) { config_.algorithm = algorithm; integral_ = 0.0f; }
+void BalanceManager::setAlgorithm(BalanceAlgorithm algorithm)
+{
+  config_.algorithm = algorithm;
+  integral_ = 0.0f;
+  tilt_latched_ = 0U;
+}
 BalanceAlgorithm BalanceManager::algorithm() const { return config_.algorithm; }
 
 void BalanceManager::setEnabled(uint8_t enabled)
@@ -51,18 +63,39 @@ float BalanceManager::clamp(float value, float minimum, float maximum)
   return value;
 }
 
+float BalanceManager::outputLimitForAngle(float angle_error_deg) const
+{
+  const float magnitude = fabsf(angle_error_deg);
+  if (magnitude <= config_.boost_start_deg ||
+      config_.boost_max_output_percent <= config_.max_output_percent)
+  {
+    return config_.max_output_percent;
+  }
+
+  const float span = config_.tilt_cutoff_deg - config_.boost_start_deg;
+  if (span <= 0.0f)
+  {
+    return config_.max_output_percent;
+  }
+
+  const float ratio = clamp((magnitude - config_.boost_start_deg) / span, 0.0f, 1.0f);
+  return config_.max_output_percent +
+         ratio * (config_.boost_max_output_percent - config_.max_output_percent);
+}
+
 float BalanceManager::computePid(const BalanceInput &input, float error)
 {
   const float dt = clamp(input.dt_s, 0.0005f, 0.02f);
+  const float output_limit = outputLimitForAngle(error);
   const float previous_integral = integral_;
   integral_ = clamp(integral_ + error * dt,
                     -config_.pid.integral_limit, config_.pid.integral_limit);
   float correction = (config_.pid.kp * error) +
                      (config_.pid.ki * integral_) -
                      (config_.pid.kd * input.angular_rate_dps);
-  correction = clamp(correction, -config_.max_output_percent, config_.max_output_percent);
-  if ((correction >= config_.max_output_percent && error > 0.0f) ||
-      (correction <= -config_.max_output_percent && error < 0.0f)) integral_ = previous_integral;
+  correction = clamp(correction, -output_limit, output_limit);
+  if ((correction >= output_limit && error > 0.0f) ||
+      (correction <= -output_limit && error < 0.0f)) integral_ = previous_integral;
   return correction;
 }
 
@@ -78,6 +111,10 @@ float BalanceManager::computeStateFeedback(const BalanceInput &input)
 
 void BalanceManager::forceSafeOutput(uint32_t faults)
 {
+  if ((faults & (BALANCE_FAULT_IMU_INVALID | BALANCE_FAULT_IMU_STALE | BALANCE_FAULT_TILT_LIMIT)) != 0U)
+  {
+    integral_ = 0.0f;
+  }
   output_.left_motor_percent = 0;
   output_.right_motor_percent = 0;
   output_.correction_percent = 0.0f;
@@ -116,10 +153,12 @@ BalanceOutput BalanceManager::update(const BalanceInput &input)
     case BalanceAlgorithm::PD:
       correction = (config_.pid.kp * output_.angle_error_deg) -
                    (config_.pid.kd * input.angular_rate_dps);
-      correction = clamp(correction, -config_.max_output_percent, config_.max_output_percent);
+      correction = clamp(correction, -outputLimitForAngle(output_.angle_error_deg),
+                         outputLimitForAngle(output_.angle_error_deg));
       break;
     case BalanceAlgorithm::StateFeedback:
-      correction = clamp(computeStateFeedback(input), -config_.max_output_percent, config_.max_output_percent);
+      correction = clamp(computeStateFeedback(input), -outputLimitForAngle(output_.angle_error_deg),
+                         outputLimitForAngle(output_.angle_error_deg));
       break;
     case BalanceAlgorithm::Disabled:
     default: forceSafeOutput(BALANCE_FAULT_NOT_ENABLED); return output_;
@@ -128,7 +167,7 @@ BalanceOutput BalanceManager::update(const BalanceInput &input)
   output_.correction_percent = correction;
   output_.left_motor_percent = (int16_t)clamp(correction, -100.0f, 100.0f);
   output_.right_motor_percent = (int16_t)clamp(correction, -100.0f, 100.0f);
-  output_.saturated = (uint8_t)(fabsf(correction) >= config_.max_output_percent);
+  output_.saturated = (uint8_t)(fabsf(correction) >= outputLimitForAngle(output_.angle_error_deg));
   output_.active = 1U;
   output_.integral = integral_;
   return output_;
