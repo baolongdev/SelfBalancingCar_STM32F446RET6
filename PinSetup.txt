@@ -60,13 +60,6 @@ DEBUG UART
 - Frame            : 8 data bits, no parity, 1 stop bit
 - Purpose          : diagnostic log and runtime observation
 
-REMOVED PERIPHERALS
-------------------------------------------------------------
-- Ultrasonic sensors     : removed
-- Line sensor / I2C use  : removed and replaced by ICM-20948 I2C
-- Speaker / USART3       : removed
-- TIM1 echo timer        : removed
-
 ELECTRICAL NOTES
 ------------------------------------------------------------
 - Connect sensor GND to STM32 GND.

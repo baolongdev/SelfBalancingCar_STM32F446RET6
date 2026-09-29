@@ -42,7 +42,7 @@ extern "C" void AppMain_Init(void)
 
   /* Balance control is deliberately disabled until axis direction and offsets
      are verified with the chassis lifted from the ground. */
-  g_balance_manager.init(BalanceConfig::DefaultConfig());
+  g_balance_manager.init(BalanceManager::DefaultConfig());
   g_balance_manager.setAlgorithm(BalanceAlgorithm::PID);
   g_balance_manager.setEnabled(0U);
 
