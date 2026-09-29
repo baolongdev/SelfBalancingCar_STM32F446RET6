@@ -1,0 +1,17 @@
+# Build output
+Debug/
+Release/
+
+# Local agent/worktree metadata
+.kilo/
+.claude/
+
+# STM32 toolchain artifacts
+*.o
+*.d
+*.su
+*.elf
+*.map
+*.list
+*.bin
+*.hex

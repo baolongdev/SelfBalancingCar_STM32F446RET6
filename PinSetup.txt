@@ -1,0 +1,77 @@
+============================================================
+SELF-BALANCING CAR - STM32F446RET6
+Hardware pin assignment and runtime configuration
+============================================================
+
+MCU
+------------------------------------------------------------
+- MCU              : STM32F446RET6
+- System clock     : 72 MHz
+- VDD              : 3.3 V
+- Firmware tool    : STM32CubeIDE / STM32CubeMX
+
+STATUS & USER INPUT
+------------------------------------------------------------
+- LED_STATUS       : PB2   (GPIO output)
+- BTN_B0           : PB0   (GPIO input, no EXTI configured)
+- BTN_C13          : PC13  (GPIO input, no EXTI configured)
+
+MOTOR DRIVER
+------------------------------------------------------------
+LEFT MOTOR
+- MOTOR_LEFT_R_EN  : PC1   (GPIO output)
+- MOTOR_LEFT_L_EN  : PC3   (GPIO output)
+- MOTOR_LEFT_PWM   : PA1   (TIM2_CH2 PWM)
+
+RIGHT MOTOR
+- MOTOR_RIGHT_R_EN : PC2   (GPIO output)
+- MOTOR_RIGHT_L_EN : PA0   (GPIO output)
+- MOTOR_RIGHT_PWM  : PA2   (TIM2_CH3 PWM)
+
+MOTOR PWM
+------------------------------------------------------------
+- Timer            : TIM2
+- PWM channels     : CH2 / CH3
+- Prescaler        : 0
+- Period           : 16000
+- PWM frequency    : approximately 4.5 kHz at 72 MHz timer clock
+- Initial state    : duty cycle 0%, motor stopped
+
+ANGLE SENSOR: GY-ICM20948V2
+------------------------------------------------------------
+- Interface        : I2C1
+- IMU_SCL          : PB6  (I2C1_SCL)
+- IMU_SDA          : PB7  (I2C1_SDA)
+- I2C speed        : 400 kHz, Fast mode
+- Address AD0=LOW  : 0x68 (HAL address: 0xD0)
+- Address AD0=HIGH : 0x69 (HAL address: 0xD2)
+- Firmware         : tries 0x68 first, then 0x69
+- WHO_AM_I         : 0xEA
+- Accelerometer    : +/-2 g
+- Gyroscope        : +/-250 dps
+- Firmware sample  : 250 Hz, one sample every 4 ms
+- IMU data used    : accelerometer angle and gyroscope Y rate
+
+DEBUG UART
+------------------------------------------------------------
+- USART1_TX        : PA9
+- USART1_RX        : PA10
+- Baud rate        : 115200
+- Frame            : 8 data bits, no parity, 1 stop bit
+- Purpose          : diagnostic log and runtime observation
+
+REMOVED PERIPHERALS
+------------------------------------------------------------
+- Ultrasonic sensors     : removed
+- Line sensor / I2C use  : removed and replaced by ICM-20948 I2C
+- Speaker / USART3       : removed
+- TIM1 echo timer        : removed
+
+ELECTRICAL NOTES
+------------------------------------------------------------
+- Connect sensor GND to STM32 GND.
+- Confirm the breakout board accepts 3.3 V logic on SDA/SCL.
+- SDA and SCL require pull-up resistors; use the breakout pull-ups or
+  external pull-ups suitable for 3.3 V. Do not add multiple strong pull-ups.
+- Keep I2C wires short and away from motor wires.
+- Verify AD0 before changing the firmware address.
