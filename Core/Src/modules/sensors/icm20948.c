@@ -159,6 +159,9 @@ HAL_StatusTypeDef ICM20948_Read(ICM20948_t *imu)
     imu->gyro_dps[axis] = ((float)imu->gyro_raw[axis] / ICM20948_GYRO_LSB_PER_DPS) - imu->gyro_bias_dps[axis];
   }
 
+  /* Quy ước balance: xe đứng trên hai bánh = 0 deg, xe nằm ngang = +/-90 deg.
+     Theo log thực tế, tư thế xe nằm có gravity trên +Y, nên dùng roll chuẩn
+     theo Y; khi xe đứng, gravity chuyển về trục Z và góc tiến về 0 deg. */
   imu->roll_deg = atan2f(imu->accel_g[1],
                          sqrtf((imu->accel_g[0] * imu->accel_g[0]) +
                                (imu->accel_g[2] * imu->accel_g[2]))) * ICM20948_RAD_TO_DEG;

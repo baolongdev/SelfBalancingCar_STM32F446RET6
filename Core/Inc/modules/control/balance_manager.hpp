@@ -94,6 +94,7 @@ private:
   float integral_;
   uint8_t enabled_;
   uint8_t tilt_latched_;
+  uint8_t rescue_latched_;
 };
 
 #endif /* BALANCE_MANAGER_HPP */

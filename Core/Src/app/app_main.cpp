@@ -9,10 +9,13 @@
 #include "modules/sensors/icm20948.h"
 #include "tim.h"
 #include "usart.h"
+#include "stm32f4xx_hal_flash.h"
+#include "stm32f4xx_hal_flash_ex.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stddef.h>
 
 namespace
 {
@@ -34,12 +37,215 @@ volatile uint16_t g_uart_rx_tail;
 volatile uint32_t g_uart_rx_dropped;
 uint8_t g_uart_rx_ring[512];
 static const float kComplementaryGyroWeight = 0.985f;
-/* Verified from the current mechanical orientation: balance uses roll/Gyro-X. */
+/* Mechanical convention: car upright on its two wheels = 0 deg, lying flat =
+   approximately +/-90 deg. */
 static const float kBalanceAngleSign = 1.0f;
 static const float kBalanceGyroSign = 1.0f;
 /* Fill these after the encoder timer/pin mapping is confirmed on the PCB. */
 static const float kEncoderCountsPerRev = 0.0f;
 static const float kWheelCircumferenceM = 0.0f;
+
+static const uint32_t kBalancePersistAddress = 0x08060000UL;
+static const uint32_t kBalancePersistMagic = 0x42414C31UL; /* BAL1 */
+static const uint32_t kBalancePersistVersion = 1UL;
+
+struct BalancePersistRecord
+{
+  uint32_t magic;
+  uint32_t version;
+  uint32_t algorithm;
+  float target_angle_deg;
+  float max_output_percent;
+  float boost_start_deg;
+  float boost_max_output_percent;
+  float tilt_cutoff_deg;
+  float tilt_recover_deg;
+  uint32_t stale_timeout_ms;
+  uint32_t invert_output;
+  float kp;
+  float ki;
+  float kd;
+  float integral_limit;
+  float angle_gain;
+  float angular_rate_gain;
+  float speed_gain;
+  float position_gain;
+  uint32_t min_start_percent;
+  uint32_t min_run_percent;
+  uint32_t accel_up_percent_per_s;
+  uint32_t accel_down_percent_per_s;
+  uint32_t crc;
+};
+
+static_assert((sizeof(BalancePersistRecord) % sizeof(uint32_t)) == 0U,
+              "Balance persist record must be word aligned");
+
+static uint32_t BalancePersistCrc(const BalancePersistRecord &record)
+{
+  const uint8_t *bytes = reinterpret_cast<const uint8_t *>(&record);
+  const size_t length = offsetof(BalancePersistRecord, crc);
+  uint32_t crc = 2166136261UL;
+  for (size_t i = 0U; i < length; ++i)
+  {
+    crc ^= bytes[i];
+    crc *= 16777619UL;
+  }
+  return crc;
+}
+
+static BalancePersistRecord BalancePersistFromConfig(const BalanceConfig &config,
+                                                     const MotorController_t &motor)
+{
+  BalancePersistRecord record{};
+  record.magic = kBalancePersistMagic;
+  record.version = kBalancePersistVersion;
+  record.algorithm = static_cast<uint32_t>(config.algorithm);
+  record.target_angle_deg = config.target_angle_deg;
+  record.max_output_percent = config.max_output_percent;
+  record.boost_start_deg = config.boost_start_deg;
+  record.boost_max_output_percent = config.boost_max_output_percent;
+  record.tilt_cutoff_deg = config.tilt_cutoff_deg;
+  record.tilt_recover_deg = config.tilt_recover_deg;
+  record.stale_timeout_ms = config.stale_timeout_ms;
+  record.invert_output = config.invert_output;
+  record.kp = config.pid.kp;
+  record.ki = config.pid.ki;
+  record.kd = config.pid.kd;
+  record.integral_limit = config.pid.integral_limit;
+  record.angle_gain = config.state_feedback.angle_gain;
+  record.angular_rate_gain = config.state_feedback.angular_rate_gain;
+  record.speed_gain = config.state_feedback.speed_gain;
+  record.position_gain = config.state_feedback.position_gain;
+  record.min_start_percent = motor.min_start_percent;
+  record.min_run_percent = motor.min_run_percent;
+  record.accel_up_percent_per_s = motor.custom_slew.accel_up_per_s;
+  record.accel_down_percent_per_s = motor.custom_slew.accel_down_per_s;
+  record.crc = BalancePersistCrc(record);
+  return record;
+}
+
+static uint8_t BalancePersistRecordValid(const BalancePersistRecord &record)
+{
+  return (uint8_t)(record.magic == kBalancePersistMagic &&
+                   record.version == kBalancePersistVersion &&
+                   record.algorithm <= static_cast<uint32_t>(BalanceAlgorithm::StateFeedback) &&
+                   isfinite(record.target_angle_deg) &&
+                   isfinite(record.max_output_percent) &&
+                   isfinite(record.boost_start_deg) &&
+                   isfinite(record.boost_max_output_percent) &&
+                   isfinite(record.tilt_cutoff_deg) &&
+                   isfinite(record.tilt_recover_deg) &&
+                   isfinite(record.kp) && isfinite(record.ki) && isfinite(record.kd) &&
+                   isfinite(record.integral_limit) &&
+                   record.crc == BalancePersistCrc(record));
+}
+
+static uint8_t BalancePersistLoad(BalanceConfig *config,
+                                  uint8_t *min_start,
+                                  uint8_t *min_run,
+                                  uint16_t *accel_up,
+                                  uint16_t *accel_down)
+{
+  const BalancePersistRecord &record =
+    *reinterpret_cast<const BalancePersistRecord *>(kBalancePersistAddress);
+  if ((config == NULL) || (min_start == NULL) || (min_run == NULL) ||
+      (accel_up == NULL) || (accel_down == NULL) ||
+      (BalancePersistRecordValid(record) == 0U))
+  {
+    return 0U;
+  }
+  config->algorithm = static_cast<BalanceAlgorithm>(record.algorithm);
+  config->target_angle_deg = record.target_angle_deg;
+  config->max_output_percent = record.max_output_percent;
+  config->boost_start_deg = record.boost_start_deg;
+  config->boost_max_output_percent = record.boost_max_output_percent;
+  config->tilt_cutoff_deg = record.tilt_cutoff_deg;
+  config->tilt_recover_deg = record.tilt_recover_deg;
+  config->stale_timeout_ms = record.stale_timeout_ms;
+  config->invert_output = (uint8_t)(record.invert_output != 0U);
+  config->pid = {record.kp, record.ki, record.kd, record.integral_limit};
+  config->state_feedback = {record.angle_gain, record.angular_rate_gain,
+                             record.speed_gain, record.position_gain};
+  *min_start = (uint8_t)((record.min_start_percent > 100U) ? 100U : record.min_start_percent);
+  *min_run = (uint8_t)((record.min_run_percent > 100U) ? 100U : record.min_run_percent);
+  *accel_up = (uint16_t)((record.accel_up_percent_per_s > 65535U) ?
+                         65535U : record.accel_up_percent_per_s);
+  *accel_down = (uint16_t)((record.accel_down_percent_per_s > 65535U) ?
+                           65535U : record.accel_down_percent_per_s);
+  return 1U;
+}
+
+static HAL_StatusTypeDef BalancePersistSave(const BalanceConfig &config,
+                                             const MotorController_t &motor)
+{
+  BalancePersistRecord record = BalancePersistFromConfig(config, motor);
+  FLASH_EraseInitTypeDef erase{};
+  uint32_t erase_error = 0U;
+  HAL_StatusTypeDef status = HAL_FLASH_Unlock();
+  if (status != HAL_OK) return status;
+  __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR |
+                         FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR | FLASH_FLAG_PGSERR);
+  erase.TypeErase = FLASH_TYPEERASE_SECTORS;
+  erase.Sector = FLASH_SECTOR_7;
+  erase.NbSectors = 1U;
+  erase.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+  status = HAL_FLASHEx_Erase(&erase, &erase_error);
+  if (status == HAL_OK)
+  {
+    const uint32_t *words = reinterpret_cast<const uint32_t *>(&record);
+    for (uint32_t i = 0U; i < (sizeof(record) / sizeof(uint32_t)); ++i)
+    {
+      status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD,
+                                 kBalancePersistAddress + (i * sizeof(uint32_t)),
+                                 words[i]);
+      if (status != HAL_OK) break;
+    }
+  }
+  HAL_FLASH_Lock();
+  return status;
+}
+
+static void SetStatusLedForBalance(const BalanceOutput &balance_output,
+                                    int16_t pwm_left_command_percent,
+                                    int16_t pwm_right_command_percent)
+{
+  LedMode_t mode = LED_MODE_OFF;
+
+  if ((balance_output.faults & BALANCE_FAULT_IMU_INVALID) != 0U ||
+      (balance_output.faults & BALANCE_FAULT_IMU_STALE) != 0U ||
+      (balance_output.faults & BALANCE_FAULT_TILT_LIMIT) != 0U)
+  {
+    /* LED đơn: nháy nhanh thay cho cảnh báo đỏ khi mất I2C/IMU hoặc tilt. */
+    mode = LED_MODE_BLINK_FAST;
+  }
+  else if (balance_output.active == 0U)
+  {
+    mode = LED_MODE_OFF;
+  }
+  else if ((abs((int)pwm_left_command_percent) <= 1) &&
+           (abs((int)pwm_right_command_percent) <= 1) &&
+           (fabsf(balance_output.angle_error_deg) <= 0.2f))
+  {
+    /* Gần target và lệnh PWM gần như bằng 0: sáng ổn định. */
+    mode = LED_MODE_ON;
+  }
+  else
+  {
+    /* Lệnh PWM càng cao thì LED càng chớp nhanh; PWM thấp thì chớp chậm. */
+    const int pwm_abs_left = abs((int)pwm_left_command_percent);
+    const int pwm_abs_right = abs((int)pwm_right_command_percent);
+    const int pwm_abs = (pwm_abs_left > pwm_abs_right) ? pwm_abs_left : pwm_abs_right;
+    const int clamped_pwm = (pwm_abs > 100) ? 100 : pwm_abs;
+    const uint32_t period_ms = (uint32_t)(900 - (clamped_pwm * 8));
+    LedManager_SetCustomBlink(period_ms);
+    mode = LED_MODE_BLINK_CUSTOM;
+  }
+
+  if (LedManager_GetMode() != mode)
+  {
+    LedManager_SetMode(mode);
+  }
+}
 
 static void BalanceLogConfig()
 {
@@ -214,6 +420,26 @@ static void ProcessBalanceCommand(char *command)
     }
     g_balance_manager.setConfig(BalanceManager::DefaultConfig());
     BalanceLogConfig();
+    return;
+  }
+
+  if (strcmp(token, "SAVE") == 0)
+  {
+    if (g_balance_manager.enabled() != 0U)
+    {
+      LOGW("BALSTORE", "reject save while balance enabled");
+      return;
+    }
+    const HAL_StatusTypeDef status = BalancePersistSave(g_balance_manager.config(),
+                                                        g_motor_controller);
+    if (status == HAL_OK)
+    {
+      LOGI("BALSTORE", "saved config to flash sector 7");
+    }
+    else
+    {
+      LOGE("BALSTORE", "flash save failed status=%u", (unsigned int)status);
+    }
     return;
   }
 
@@ -394,9 +620,22 @@ extern "C" void AppMain_Init(void)
   g_next_imu_sample_ms = HAL_GetTick();
   g_last_imu_sample_ms = g_next_imu_sample_ms;
 
+  /* Load the last UART-saved tuning before the balance manager starts. */
+  BalanceConfig startup_balance_config = BalanceManager::DefaultConfig();
+  uint8_t saved_min_start = 60U;
+  uint8_t saved_min_run = 18U;
+  uint16_t saved_accel_up = 9000U;
+  uint16_t saved_accel_down = 13000U;
+  const uint8_t saved_config = BalancePersistLoad(&startup_balance_config,
+                                                  &saved_min_start,
+                                                  &saved_min_run,
+                                                  &saved_accel_up,
+                                                  &saved_accel_down);
+  LOGI("BALSTORE", "startup_config=%u", (unsigned int)saved_config);
+
   /* Balance starts automatically after a valid, safe IMU sample. A manual
      BAL ENABLE 0 command clears the request and keeps it disabled. */
-  g_balance_manager.init(BalanceManager::DefaultConfig());
+  g_balance_manager.init(startup_balance_config);
   g_balance_manager.setAlgorithm(BalanceAlgorithm::PID);
   g_balance_enable_requested = 1U;
   g_balance_manager.setEnabled(0U);
@@ -409,13 +648,16 @@ extern "C" void AppMain_Init(void)
      Forward/Backward và TurnLeft/TurnRight khớp với hướng xe. */
   MotorController_SetInversion(&g_motor_controller, 1U, 0U);
   MotorController_SetStopMode(&g_motor_controller, MOTOR_STOP_BRAKE);
-  MotorController_SetDirectionSafety(&g_motor_controller, 80U, 40U);
-  /* Ngưỡng khởi động motor là 45%; giữ ngưỡng chạy 10% để balance còn
-     điều khiển được các hiệu chỉnh nhỏ quanh điểm thẳng đứng. */
-  MotorController_SetMinDrivePercent(&g_motor_controller, 25U, 8U);
-  /* Pin đặt cao làm hệ có quán tính lớn; tăng tốc độ ramp để PWM bắt kịp
-     khi góc lệch tăng nhanh. */
-  MotorController_SetCustomSlew(&g_motor_controller, 1000U, 1400U);
+  /* Balance cần đảo chiều nhanh để chống quán tính; không dùng profile
+     reverse dài của chế độ manual vì 80 ms sẽ bỏ lỡ nhiều chu kỳ 250 Hz. */
+  MotorController_SetDirectionSafety(&g_motor_controller, 5U, 0U);
+  /* Tăng lực khởi động vừa phải và giảm độ trễ ramp khi góc lệch tăng nhanh. */
+  MotorController_SetMinDrivePercent(&g_motor_controller,
+                                     (saved_config != 0U) ? saved_min_start : 60U,
+                                     (saved_config != 0U) ? saved_min_run : 18U);
+  MotorController_SetCustomSlew(&g_motor_controller,
+                                (saved_config != 0U) ? saved_accel_up : 9000U,
+                                (saved_config != 0U) ? saved_accel_down : 13000U);
   MotorController_SetCommandTimeout(&g_motor_controller, 600U);
 
   if (MotorController_Start(&g_motor_controller) != HAL_OK)
@@ -450,10 +692,8 @@ extern "C" void AppMain_Loop(void)
     g_balance_input.imu_valid = 1U;
       (void)ICM20948_UpdateComplementaryFilter(&g_imu, g_balance_input.dt_s,
                                                 kComplementaryGyroWeight);
-      /* Với cách lắp GY-ICM20948V2 hiện tại, trục nghiêng trước/sau của xe
-         thể hiện trên roll (Ay/Az), vì vậy phải dùng gyro X tương ứng. Dùng
-         pitch/gyro Y ở đây khiến PID vẫn có output nhưng không phản ứng đúng
-         với hướng nghiêng thực tế của xe. */
+      /* Roll theo quy ước cơ khí của xe dùng filtered_roll; tốc độ góc tương
+         ứng vẫn là gyro-X. */
       g_balance_input.angle_deg = kBalanceAngleSign * g_imu.filtered_roll_deg;
       g_balance_input.angular_rate_dps = kBalanceGyroSign * g_imu.gyro_dps[0];
       g_balance_input.left_speed = WheelEncoder_GetSpeed(&g_left_encoder);
@@ -465,12 +705,16 @@ extern "C" void AppMain_Loop(void)
       /* Tự kích hoạt khi IMU hợp lệ và xe còn trong vùng an toàn. Khi góc
          vượt cutoff, BalanceManager sẽ latch fault và phía dưới dừng motor. */
       if (g_balance_enable_requested != 0U &&
-           fabsf(g_imu.filtered_roll_deg) < g_balance_manager.config().tilt_cutoff_deg)
+           fabsf(g_balance_manager.config().target_angle_deg - g_imu.filtered_roll_deg) <
+                g_balance_manager.config().tilt_cutoff_deg)
       {
         g_balance_manager.setEnabled(1U);
       }
 
       const BalanceOutput balance_output = g_balance_manager.update(g_balance_input);
+      SetStatusLedForBalance(balance_output,
+                              balance_output.left_motor_percent,
+                              balance_output.right_motor_percent);
       if (balance_output.active != 0U)
       {
         MotorController_SetDriveMode(&g_motor_controller, MOTOR_DRIVE_MODE_CUSTOM);
@@ -500,20 +744,25 @@ extern "C" void AppMain_Loop(void)
         (long)(g_imu.accel_g[1] * 1000.0f),
         (long)(g_imu.accel_g[2] * 1000.0f));
 
+      /* BAL telemetry cần luôn có ở mức Info để không phụ thuộc cấu hình
+         logger Debug của bản firmware đang chạy. */
       logger.logRateLimited(
-        LogLevel::Debug,
+        LogLevel::Info,
         "BAL",
         0xBA1A1U,
         200U,
-        "alg=%s en=%u err_cdeg=%ld out_cpercent=%ld fault=0x%08lx",
+        "alg=%s en=%u err_cdeg=%ld out_cpercent=%ld pwmL_percent=%ld pwmR_percent=%ld fault=0x%08lx",
         BalanceManager::AlgorithmName(balance_output.algorithm),
         (unsigned int)g_balance_manager.enabled(),
         (long)(balance_output.angle_error_deg * 100.0f),
         (long)(balance_output.correction_percent * 100.0f),
+        (long)g_motor_controller.applied_left_percent,
+        (long)g_motor_controller.applied_right_percent,
         (unsigned long)balance_output.faults);
     }
     else
     {
+      LedManager_SetMode(LED_MODE_BLINK_FAST);
       logger.logRateLimited(LogLevel::Error, "IMU", 0x20949U, 500U,
                             "ICM-20948 read failed st=%u i2c_err=0x%08lx",
                             (unsigned int)g_imu.last_status,
@@ -529,6 +778,7 @@ extern "C" void AppMain_Loop(void)
     g_balance_input.imu_valid = 0U;
     (void)g_balance_manager.update(g_balance_input);
     MotorController_Stop(&g_motor_controller);
+    LedManager_SetMode(LED_MODE_BLINK_FAST);
   }
 
   MotorController_Update(&g_motor_controller);
