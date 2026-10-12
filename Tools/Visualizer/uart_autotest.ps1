@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Tu dong: tat balance -> ap dung cau hinh BAL APPLY -> bat balance -> ghi log N giay
+  Tu dong: ap dung cau hinh BAL APPLY ngay khi xe dang chay -> ghi log N giay
   -> phan tich nhanh (bien do loi, % bao hoa PWM, fault). Khong can thao tac tay qua
   nhieu buoc rieng le.
 
@@ -46,15 +46,13 @@ try {
 
 $sb = New-Object System.Text.StringBuilder
 try {
-    Write-Host "1) Tat balance..." -ForegroundColor Cyan
-    Send-Line "BAL ENABLE 0"
-    Drain-For 1.0 $sb
-
-    Write-Host "2) Ap dung cau hinh..." -ForegroundColor Cyan
+    # Firmware cho phep APPLY khi dang balance, khong can tat xe.
+    Write-Host "1) Ap dung cau hinh (live)..." -ForegroundColor Cyan
     Send-Line $ApplyCmd
     Drain-For 1.0 $sb
 
-    Write-Host "3) Bat balance va ghi log $Seconds giay..." -ForegroundColor Cyan
+    # ENABLE 1 chi dat co yeu cau; xe tu chay khi |err| <= recover.
+    Write-Host "2) Dam bao balance duoc yeu cau va ghi log $Seconds giay..." -ForegroundColor Cyan
     Send-Line "BAL ENABLE 1"
     Drain-For $Seconds $sb
 } finally {

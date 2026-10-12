@@ -144,6 +144,10 @@ typedef struct
   int16_t applied_left_percent;
   int16_t applied_right_percent;
 
+  /* Tick cuoi cung motor co lenh khac 0: doi chieu nhanh (qua 0 vai ms)
+     van tinh la "dang chay" -> dung min_run thay vi kick min_start. */
+  uint32_t left_last_run_tick;
+  uint32_t right_last_run_tick;
   uint32_t left_reverse_unlock_tick;
   uint32_t right_reverse_unlock_tick;
   uint32_t left_brake_until_tick;

@@ -191,6 +191,13 @@ void UartLogger::onErrorFromISR(UART_HandleTypeDef *huart)
     return;
   }
 
+  /* ErrorCallback cung chay cho loi RX (ORE/FE/NE). Neu TX IT van dang chay
+     thi TxCplt se den sau; reset tx_busy_ luc nay se gui lap doan log. */
+  if (huart->gState == HAL_UART_STATE_BUSY_TX)
+  {
+    return;
+  }
+
   primask = EnterCritical();
   tx_len_ = 0U;
   tx_busy_ = 0U;

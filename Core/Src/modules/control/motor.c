@@ -11,6 +11,8 @@
 
 #define MOTOR_PERCENT_MIN   (-100)
 #define MOTOR_PERCENT_MAX   (100)
+/* Motor vua chay trong khoang nay van con quan tinh, khong can kick min_start. */
+#define MOTOR_RUN_HOLD_MS   (40U)
 
 typedef enum
 {
@@ -262,6 +264,56 @@ static int16_t Motor_ApplyMinPercent(const MotorController_t *controller, int16_
   return (limited > 0) ? abs_value : (int16_t)(-abs_value);
 }
 
+/* Bu deadband tuyen tinh: lenh 1..100% duoc anh xa vao [min_run..100]% de
+   giu do loi lien tuc quanh 0, thay vi kep moi lenh nho len cung mot muc.
+   Khi motor dang dung yen, muc toi thieu duoc nang len min_start de thang ma
+   sat tinh. */
+static int16_t Motor_CompensateDeadband(const MotorController_t *controller, int16_t command_percent, uint8_t was_running)
+{
+  int16_t limited = Motor_ClampPercent(command_percent);
+  int32_t base = (int32_t)controller->min_run_percent;
+  int32_t mapped;
+
+  if (limited == 0)
+  {
+    return 0;
+  }
+
+  mapped = base + ((((int32_t)Motor_AbsInt16(limited)) * (100 - base)) + 50) / 100;
+  if ((was_running == 0U) && (mapped < (int32_t)controller->min_start_percent))
+  {
+    mapped = (int32_t)controller->min_start_percent;
+  }
+  if (mapped > MOTOR_PERCENT_MAX)
+  {
+    mapped = MOTOR_PERCENT_MAX;
+  }
+
+  return (limited > 0) ? (int16_t)mapped : (int16_t)(-mapped);
+}
+
+static void Motor_DriveLockout(const MotorController_t *controller,
+                               const Motor_t *motor,
+                               uint32_t brake_until_tick,
+                               uint32_t now,
+                               MotorSideMode_t *mode)
+{
+  if ((controller->reverse_brake_ms > 0U) && ((int32_t)(now - brake_until_tick) < 0))
+  {
+    Motor_BrakeSingle(motor);
+    *mode = MOTOR_SIDE_MODE_BRAKE;
+    return;
+  }
+  Motor_CoastSingle(motor);
+  *mode = MOTOR_SIDE_MODE_COAST;
+}
+
+static uint8_t Motor_WasRunning(int16_t applied_percent, uint32_t last_run_tick, uint32_t now)
+{
+  return (uint8_t)((applied_percent != 0) ||
+                   ((last_run_tick != 0U) && ((now - last_run_tick) < MOTOR_RUN_HOLD_MS)));
+}
+
 static MotorSideMode_t Motor_CheckReverseTransition(MotorController_t *controller,
                                                     const Motor_t *motor,
                                                     int16_t applied_percent,
@@ -273,8 +325,24 @@ static MotorSideMode_t Motor_CheckReverseTransition(MotorController_t *controlle
 {
   int8_t applied_sign;
   int8_t request_sign;
+  uint32_t lock_ms;
+  MotorSideMode_t mode;
 
   *safe_command = requested_percent;
+
+  /* Dang trong pha khoa dao chieu: giu brake/coast den het deadtime, ke ca
+     khi applied_percent da ve 0 sau chu ky dau tien. */
+  if (*unlock_tick != 0U)
+  {
+    if ((int32_t)(now - *unlock_tick) < 0)
+    {
+      *safe_command = 0;
+      Motor_DriveLockout(controller, motor, *brake_until_tick, now, &mode);
+      return mode;
+    }
+    *unlock_tick = 0U;
+  }
+
   if ((requested_percent == 0) || (applied_percent == 0))
   {
     return MOTOR_SIDE_MODE_NORMAL;
@@ -292,27 +360,20 @@ static MotorSideMode_t Motor_CheckReverseTransition(MotorController_t *controlle
     return MOTOR_SIDE_MODE_NORMAL;
   }
 
-  if ((now >= *unlock_tick) || (*unlock_tick == 0U))
+  /* Khi đổi dấu lệnh, motor không được đảo chiều tức thì.
+     Tùy cấu hình sẽ có một pha brake/coast ngắn để bảo vệ cầu H và cơ khí. */
+  lock_ms = (controller->reverse_deadtime_ms > controller->reverse_brake_ms) ?
+            controller->reverse_deadtime_ms : controller->reverse_brake_ms;
+  *unlock_tick = now + lock_ms;
+  if (*unlock_tick == 0U)
   {
-    /* Khi đổi dấu lệnh, motor không được đảo chiều tức thì.
-       Tùy cấu hình sẽ có một pha brake/coast ngắn để bảo vệ cầu H và cơ khí. */
-    *unlock_tick = now + controller->reverse_deadtime_ms;
-    *brake_until_tick = now + controller->reverse_brake_ms;
+    *unlock_tick = 1U; /* 0 la gia tri "khong khoa". */
   }
+  *brake_until_tick = now + controller->reverse_brake_ms;
 
   *safe_command = 0;
-  if (now < *unlock_tick)
-  {
-    if ((controller->reverse_brake_ms > 0U) && (now < *brake_until_tick))
-    {
-      Motor_BrakeSingle(motor);
-      return MOTOR_SIDE_MODE_BRAKE;
-    }
-    Motor_CoastSingle(motor);
-    return MOTOR_SIDE_MODE_COAST;
-  }
-
-  return MOTOR_SIDE_MODE_NORMAL;
+  Motor_DriveLockout(controller, motor, *brake_until_tick, now, &mode);
+  return mode;
 }
 
 static void Motor_ClearProfileState(MotorController_t *controller)
@@ -611,6 +672,8 @@ void MotorController_InitDefault(MotorController_t *controller)
   controller->applied_left_percent = 0;
   controller->applied_right_percent = 0;
 
+  controller->left_last_run_tick = 0U;
+  controller->right_last_run_tick = 0U;
   controller->left_reverse_unlock_tick = 0U;
   controller->right_reverse_unlock_tick = 0U;
   controller->left_brake_until_tick = 0U;
@@ -707,15 +770,18 @@ void MotorController_Update(MotorController_t *controller)
 
   if (left_mode == MOTOR_SIDE_MODE_NORMAL)
   {
-    safe_left = Motor_ApplyMinPercent(controller, safe_left, (controller->applied_left_percent != 0));
+    const uint8_t was_running = Motor_WasRunning(controller->applied_left_percent,
+                                                 controller->left_last_run_tick, now);
+    safe_left = Motor_CompensateDeadband(controller, safe_left, was_running);
     next_left = Motor_SlewStep(controller->applied_left_percent, safe_left,
                                slew->accel_up_per_s, slew->accel_down_per_s, dt_ms);
     if (safe_left != 0)
     {
-      next_left = Motor_ApplyMinPercent(controller, next_left, (controller->applied_left_percent != 0));
+      next_left = Motor_ApplyMinPercent(controller, next_left, was_running);
     }
     Motor_SetOutputImmediate(controller, &controller->left, next_left);
     controller->applied_left_percent = next_left;
+    if (next_left != 0) controller->left_last_run_tick = (now != 0U) ? now : 1U;
   }
   else
   {
@@ -724,15 +790,18 @@ void MotorController_Update(MotorController_t *controller)
 
   if (right_mode == MOTOR_SIDE_MODE_NORMAL)
   {
-    safe_right = Motor_ApplyMinPercent(controller, safe_right, (controller->applied_right_percent != 0));
+    const uint8_t was_running = Motor_WasRunning(controller->applied_right_percent,
+                                                 controller->right_last_run_tick, now);
+    safe_right = Motor_CompensateDeadband(controller, safe_right, was_running);
     next_right = Motor_SlewStep(controller->applied_right_percent, safe_right,
                                 slew->accel_up_per_s, slew->accel_down_per_s, dt_ms);
     if (safe_right != 0)
     {
-      next_right = Motor_ApplyMinPercent(controller, next_right, (controller->applied_right_percent != 0));
+      next_right = Motor_ApplyMinPercent(controller, next_right, was_running);
     }
     Motor_SetOutputImmediate(controller, &controller->right, next_right);
     controller->applied_right_percent = next_right;
+    if (next_right != 0) controller->right_last_run_tick = (now != 0U) ? now : 1U;
   }
   else
   {
@@ -830,6 +899,10 @@ void MotorController_Coast(MotorController_t *controller)
   controller->target_right_percent = 0;
   controller->applied_left_percent = 0;
   controller->applied_right_percent = 0;
+  controller->left_reverse_unlock_tick = 0U;
+  controller->right_reverse_unlock_tick = 0U;
+  controller->left_last_run_tick = 0U;
+  controller->right_last_run_tick = 0U;
   Motor_CoastSingle(&controller->left);
   Motor_CoastSingle(&controller->right);
   controller->last_command_tick = HAL_GetTick();
@@ -847,6 +920,12 @@ void MotorController_Brake(MotorController_t *controller)
   controller->target_right_percent = 0;
   controller->applied_left_percent = 0;
   controller->applied_right_percent = 0;
+  /* Stop chu dong da dua motor ve 0, khong can giu khoa dao chieu (neu giu,
+     Update se ghi de brake bang coast trong pha khoa). */
+  controller->left_reverse_unlock_tick = 0U;
+  controller->right_reverse_unlock_tick = 0U;
+  controller->left_last_run_tick = 0U;
+  controller->right_last_run_tick = 0U;
   Motor_BrakeSingle(&controller->left);
   Motor_BrakeSingle(&controller->right);
   controller->last_command_tick = HAL_GetTick();

@@ -42,13 +42,13 @@ ANGLE SENSOR: GY-ICM20948V2
 - Interface        : I2C1
 - IMU_SCL          : PB6  (I2C1_SCL)
 - IMU_SDA          : PB7  (I2C1_SDA)
-- I2C speed        : 400 kHz, Fast mode
+- I2C speed        : 100 kHz, Standard mode (digital filter 4, bus recovery on error)
 - Address AD0=LOW  : 0x68 (HAL address: 0xD0)
 - Address AD0=HIGH : 0x69 (HAL address: 0xD2)
 - Firmware         : tries 0x68 first, then 0x69
 - WHO_AM_I         : 0xEA
 - Accelerometer    : +/-2 g
-- Gyroscope        : +/-250 dps
+- Gyroscope        : +/-2000 dps
 - Firmware sample  : 250 Hz, one sample every 4 ms
 - IMU data used    : complementary-filtered roll angle, bias-corrected
                      gyroscope X rate for balance; gyroscope Z remains

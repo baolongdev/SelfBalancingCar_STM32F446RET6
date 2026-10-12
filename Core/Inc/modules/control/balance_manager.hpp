@@ -26,6 +26,9 @@ struct BalanceInput
   float left_position;
   float right_position;
   float battery_voltage;
+  /* PWM thuc te dang ap ra motor (trung binh 2 banh, sau bu deadband), dung
+     de uoc luong xe dang troi khi chua co encoder. */
+  float motor_command_percent;
 };
 
 struct BalanceOutput
@@ -39,6 +42,8 @@ struct BalanceOutput
   uint32_t faults;
   uint8_t saturated;
   uint8_t active;
+  float target_shift_deg;
+  float trim_deg;
 };
 
 struct BalancePidConfig
@@ -68,6 +73,17 @@ struct BalanceConfig
   uint8_t invert_output;
   BalancePidConfig pid;
   BalanceStateFeedbackConfig state_feedback;
+  /* Chong troi khi chua co encoder. Motor chay theo dien ap nen PWM on dinh
+     ~ van toc xe, va van toc ~ (target - diem can bang that). Hai thanh phan
+     dich target de keo van toc ve 0:
+       - drift_gain: P theo PWM loc thong thap (drift_tau), deg / 1% PWM.
+       - drift_trim_rate: tich phan cham (deg / (1% PWM * s)) = tu hoc diem
+         can bang, triet tieu troi do target lech.
+     Tong dich gioi han +/-drift_max. 0 = tat tung phan. */
+  float drift_gain_deg_per_percent;
+  float drift_tau_s;
+  float drift_max_deg;
+  float drift_trim_rate;
 };
 
 class BalanceManager
@@ -84,6 +100,9 @@ public:
   uint8_t enabled() const;
   BalanceOutput update(const BalanceInput &input);
   const BalanceOutput &output() const;
+  /* Diem can bang da hoc (deg, cong vao target). BAL SAVE gop no vao target. */
+  float trimDeg() const;
+  void setTrimDeg(float trim_deg);
   static BalanceConfig DefaultConfig();
   static const char *AlgorithmName(BalanceAlgorithm algorithm);
 
@@ -97,6 +116,9 @@ private:
   BalanceConfig config_;
   BalanceOutput output_;
   float integral_;
+  float drift_estimate_percent_;
+  float trim_deg_;
+  float trim_holdoff_s_;
   uint8_t enabled_;
   uint8_t tilt_latched_;
 };

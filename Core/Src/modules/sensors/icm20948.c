@@ -19,6 +19,19 @@
 #define ICM20948_REG_ACCEL_CONFIG      0x14U
 
 #define ICM20948_TIMEOUT_MS         100U
+/* Doc 14 byte o 100 kHz mat ~1.7 ms. Timeout ngan de loi I2C khong treo
+   main loop (va giu PWM cu) qua vai ms. */
+#define ICM20948_IO_TIMEOUT_MS      5U
+/* Accel/gyro luon co nhieu LSB; 50 frame giong het nhau (200 ms o 250 Hz)
+   nghia la chip da dung cap nhat du lieu. */
+#define ICM20948_STUCK_LIMIT        50U
+#define ICM20948_PWR_MGMT_1_RUN     0x01U
+/* Gyro can ~35 ms khoi dong sau khi thoat sleep; doc som se ra 0/rac va lam
+   sai bias calibrate. */
+#define ICM20948_GYRO_STARTUP_MS    50U
+/* Bo qua vai mau dau va tu choi calibrate neu xe dang bi cam/di chuyen. */
+#define ICM20948_CALIB_DISCARD      10U
+#define ICM20948_CALIB_MAX_SPREAD_DPS 4.0f
 #define ICM20948_ACCEL_LSB_PER_G    16384.0f
 /* Gyro FS = +/-2000 dps (xem GYRO_CONFIG_1 ben duoi) de tranh clip khi xe
    do/nga that voi toc do goc > 250 dps. */
@@ -41,8 +54,9 @@ static HAL_StatusTypeDef ICM20948_Write(ICM20948_t *imu, uint8_t reg, uint8_t va
 static HAL_StatusTypeDef ICM20948_ReadRegisters(ICM20948_t *imu, uint8_t reg,
                                                   uint8_t *data, uint16_t length)
 {
+  const uint32_t timeout_ms = (imu->initialized != 0U) ? ICM20948_IO_TIMEOUT_MS : ICM20948_TIMEOUT_MS;
   return HAL_I2C_Mem_Read(imu->hi2c, imu->address, reg, I2C_MEMADD_SIZE_8BIT,
-                          data, length, ICM20948_TIMEOUT_MS);
+                          data, length, timeout_ms);
 }
 
 static HAL_StatusTypeDef ICM20948_InitFailure(ICM20948_t *imu)
@@ -114,6 +128,8 @@ HAL_StatusTypeDef ICM20948_Init(ICM20948_t *imu, I2C_HandleTypeDef *hi2c, uint16
     return ICM20948_InitFailure(imu);
   }
 
+  HAL_Delay(ICM20948_GYRO_STARTUP_MS);
+
   imu->initialized = 1U;
   imu->last_status = (uint8_t)HAL_OK;
   imu->last_i2c_error = HAL_I2C_ERROR_NONE;
@@ -135,7 +151,9 @@ HAL_StatusTypeDef ICM20948_Read(ICM20948_t *imu)
     return HAL_ERROR;
   }
 
-  status = ICM20948_SelectBank(imu, ICM20948_BANK0);
+  /* Init() luon ket thuc o bank 0 va khong co code nao khac doi bank, nen
+     khong can ghi REG_BANK_SEL moi lan doc. */
+  status = ICM20948_ReadRegisters(imu, ICM20948_REG_ACCEL_XOUT_H, data, sizeof(data));
   if (status != HAL_OK)
   {
     imu->last_status = (uint8_t)status;
@@ -143,12 +161,20 @@ HAL_StatusTypeDef ICM20948_Read(ICM20948_t *imu)
     return status;
   }
 
-  status = ICM20948_ReadRegisters(imu, ICM20948_REG_ACCEL_XOUT_H, data, sizeof(data));
-  if (status != HAL_OK)
+  if (memcmp(data, imu->last_frame, sizeof(data)) == 0)
   {
-    imu->last_status = (uint8_t)status;
-    imu->last_i2c_error = HAL_I2C_GetError(imu->hi2c);
-    return status;
+    if (imu->stuck_samples < 0xFFFFU) imu->stuck_samples++;
+    if (imu->stuck_samples >= ICM20948_STUCK_LIMIT)
+    {
+      imu->last_status = ICM20948_STATUS_STUCK;
+      imu->last_i2c_error = HAL_I2C_ERROR_NONE;
+      return HAL_ERROR;
+    }
+  }
+  else
+  {
+    imu->stuck_samples = 0U;
+    memcpy(imu->last_frame, data, sizeof(data));
   }
 
   imu->last_status = HAL_OK;
@@ -178,18 +204,31 @@ HAL_StatusTypeDef ICM20948_Read(ICM20948_t *imu)
 HAL_StatusTypeDef ICM20948_CalibrateGyro(ICM20948_t *imu, uint16_t samples, uint32_t sample_delay_ms)
 {
   float sum[3] = {0.0f, 0.0f, 0.0f};
+  float min_dps[3] = {0.0f, 0.0f, 0.0f};
+  float max_dps[3] = {0.0f, 0.0f, 0.0f};
   if ((imu == NULL) || (imu->initialized == 0U) || (samples == 0U)) return HAL_ERROR;
 
   imu->filter_initialized = 0U;
-  for (uint16_t sample = 0U; sample < samples; sample++)
+  for (uint16_t sample = 0U; sample < (uint16_t)(samples + ICM20948_CALIB_DISCARD); sample++)
   {
     HAL_StatusTypeDef status = ICM20948_Read(imu);
     if (status != HAL_OK) return status;
-    for (uint8_t axis = 0U; axis < 3U; axis++)
+    if (sample >= ICM20948_CALIB_DISCARD)
     {
-      sum[axis] += (float)imu->gyro_raw[axis] / ICM20948_GYRO_LSB_PER_DPS;
+      for (uint8_t axis = 0U; axis < 3U; axis++)
+      {
+        const float dps = (float)imu->gyro_raw[axis] / ICM20948_GYRO_LSB_PER_DPS;
+        if ((sample == ICM20948_CALIB_DISCARD) || (dps < min_dps[axis])) min_dps[axis] = dps;
+        if ((sample == ICM20948_CALIB_DISCARD) || (dps > max_dps[axis])) max_dps[axis] = dps;
+        sum[axis] += dps;
+      }
     }
     if (sample_delay_ms != 0U) HAL_Delay(sample_delay_ms);
+  }
+  for (uint8_t axis = 0U; axis < 3U; axis++)
+  {
+    /* Xe bi cam/di chuyen: giu bias cu thay vi hoc sai. */
+    if ((max_dps[axis] - min_dps[axis]) > ICM20948_CALIB_MAX_SPREAD_DPS) return HAL_BUSY;
   }
   for (uint8_t axis = 0U; axis < 3U; axis++)
   {
@@ -217,6 +256,31 @@ HAL_StatusTypeDef ICM20948_UpdateComplementaryFilter(ICM20948_t *imu, float dt_s
     const float gyro_pitch = imu->filtered_pitch_deg + imu->gyro_dps[1] * dt_s;
     imu->filtered_roll_deg = gyro_weight * gyro_roll + (1.0f - gyro_weight) * imu->roll_deg;
     imu->filtered_pitch_deg = gyro_weight * gyro_pitch + (1.0f - gyro_weight) * imu->pitch_deg;
+  }
+  return HAL_OK;
+}
+
+HAL_StatusTypeDef ICM20948_CheckAlive(ICM20948_t *imu)
+{
+  uint8_t regs[7];
+  HAL_StatusTypeDef status;
+
+  if ((imu == NULL) || (imu->initialized == 0U)) return HAL_ERROR;
+
+  /* Doc lien 0x00 (WHO_AM_I) .. 0x06 (PWR_MGMT_1) trong mot transaction. */
+  status = ICM20948_ReadRegisters(imu, ICM20948_REG_WHO_AM_I, regs, sizeof(regs));
+  if (status != HAL_OK)
+  {
+    imu->last_status = (uint8_t)status;
+    imu->last_i2c_error = HAL_I2C_GetError(imu->hi2c);
+    return status;
+  }
+  if ((regs[0] != ICM20948_WHO_AM_I_VALUE) ||
+      (regs[ICM20948_REG_PWR_MGMT_1] != ICM20948_PWR_MGMT_1_RUN))
+  {
+    imu->last_status = ICM20948_STATUS_NOT_ALIVE;
+    imu->last_i2c_error = HAL_I2C_ERROR_NONE;
+    return HAL_ERROR;
   }
   return HAL_OK;
 }

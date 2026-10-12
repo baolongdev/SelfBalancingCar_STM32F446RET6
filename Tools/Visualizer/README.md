@@ -37,7 +37,11 @@ cần build hoặc nạp lại firmware. Gửi lệnh bằng `make uart-send CMD
 `make uart-get`, `make uart-enable` / `make uart-disable` (dùng
 `uart_cli.ps1`), hoặc chạy thử tự động bằng `make autotest`.
 
-Firmware chỉ cho phép `BAL APPLY` khi balance đang tắt. Các giá trị được kiểm
+Balance luôn bật sau khi boot: xe tự chạy khi góc lệch `<= recover` (mặc định
+10°), dừng motor khi lệch `>= cutoff` (mặc định 70°, coi như xe ngã) và tự chạy
+lại khi được dựng lên trong `recover`. `BAL APPLY` / `BAL DEFAULT` áp dụng ngay
+khi xe đang chạy (tune live); chỉ `BAL SAVE` cần `BAL ENABLE 0` trước vì xóa
+flash làm CPU dừng ~1-2 s. Các giá trị được kiểm
 tra giới hạn trước khi áp dụng; khi có fault IMU, stale hoặc quá góc thì tích
 phân PID được reset để tránh motor giật khi phục hồi.
 
@@ -49,5 +53,26 @@ BAL GET
 BAL ENABLE 0
 ```
 
-Cấu hình runtime hiện chỉ tồn tại trong RAM. Sau khi reset board, firmware
-quay về `BalanceManager::DefaultConfig()`.
+Lệnh tune / chẩn đoán thêm:
+
+```text
+BAL LOG 8                      # log nhanh [T] mỗi 8 ms (0 = tắt) cho uart_capture.ps1 / tune_analyze.py
+BAL APPLY drift=0.02 drift_tau=0.5 trim_rate=0.01 drift_max=3   # chống trôi + tự học điểm cân bằng
+BAL YAW kp=0.5 kd=0.05 sign=1  # giữ hướng bằng gyro Z (mặc định tắt); tự tắt nếu lệch > 60°
+BAL YAW HOLD                   # lấy hướng hiện tại làm hướng giữ
+BAL ODOM RESET                 # đặt lại bản đồ 2D về (0,0), yaw 0
+BAL ODOM k=0.008               # m/s cho mỗi 1% PWM (calibrate: chạy thẳng 1 đoạn, đo bằng thước)
+```
+
+Visualizer vẽ đường đi 2D ước lượng từ log `[ODO]` (yaw = tích phân gyro Z,
+vận tốc = k × PWM). Chưa có encoder nên chỉ dùng để xem xe trôi/xoay về hướng
+nào; quãng đường sai số khoảng 20–30%.
+
+```powershell
+.\uart_capture.ps1 -Command "BAL APPLY kp=22 kd=0.2" -Seconds 8 -Out run.log
+python tune_analyze.py run.log
+```
+
+`BAL APPLY` chỉ đổi cấu hình trong RAM. Dùng `BAL SAVE` để lưu vào flash
+(sector 7); khi boot firmware load cấu hình đã lưu nếu hợp lệ, ngược lại dùng
+`BalanceManager::DefaultConfig()`.
