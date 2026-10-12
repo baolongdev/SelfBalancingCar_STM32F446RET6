@@ -20,7 +20,9 @@
 
 #define ICM20948_TIMEOUT_MS         100U
 #define ICM20948_ACCEL_LSB_PER_G    16384.0f
-#define ICM20948_GYRO_LSB_PER_DPS   131.0f
+/* Gyro FS = +/-2000 dps (xem GYRO_CONFIG_1 ben duoi) de tranh clip khi xe
+   do/nga that voi toc do goc > 250 dps. */
+#define ICM20948_GYRO_LSB_PER_DPS   16.4f
 #define ICM20948_RAD_TO_DEG         57.2957795f
 
 static HAL_StatusTypeDef ICM20948_SelectBank(ICM20948_t *imu, uint8_t bank)
@@ -100,9 +102,10 @@ HAL_StatusTypeDef ICM20948_Init(ICM20948_t *imu, I2C_HandleTypeDef *hi2c, uint16
     return ICM20948_InitFailure(imu);
   }
 
-  /* Gyro: 250 dps, 1 kHz output; accel: 2 g, 1 kHz output. */
+  /* Gyro: 2000 dps (tranh clip khi roll/pitch doi nhanh), 1 kHz output;
+     accel: 2 g, 1 kHz output. GYRO_FCHOICE=1 (bit0), GYRO_FS_SEL=11 (bits 2:1). */
   if (ICM20948_Write(imu, ICM20948_REG_GYRO_SMPLRT_DIV, 0x00U) != HAL_OK ||
-      ICM20948_Write(imu, ICM20948_REG_GYRO_CONFIG_1, 0x01U) != HAL_OK ||
+      ICM20948_Write(imu, ICM20948_REG_GYRO_CONFIG_1, 0x07U) != HAL_OK ||
       ICM20948_Write(imu, ICM20948_REG_ACCEL_SMPLRT_DIV_1, 0x00U) != HAL_OK ||
       ICM20948_Write(imu, ICM20948_REG_ACCEL_SMPLRT_DIV_2, 0x00U) != HAL_OK ||
       ICM20948_Write(imu, ICM20948_REG_ACCEL_CONFIG, 0x01U) != HAL_OK ||

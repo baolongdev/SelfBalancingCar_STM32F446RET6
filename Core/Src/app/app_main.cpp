@@ -41,13 +41,15 @@ static const float kComplementaryGyroWeight = 0.985f;
    approximately +/-90 deg. */
 static const float kBalanceAngleSign = 1.0f;
 static const float kBalanceGyroSign = 1.0f;
+/* Bu lech lap dat IMU: cong vao goc roll truoc khi dua vao bo can bang. */
+static const float kBalanceRollOffsetDeg = 1.0f;
 /* Fill these after the encoder timer/pin mapping is confirmed on the PCB. */
 static const float kEncoderCountsPerRev = 0.0f;
 static const float kWheelCircumferenceM = 0.0f;
 
 static const uint32_t kBalancePersistAddress = 0x08060000UL;
 static const uint32_t kBalancePersistMagic = 0x42414C31UL; /* BAL1 */
-static const uint32_t kBalancePersistVersion = 1UL;
+static const uint32_t kBalancePersistVersion = 2UL;
 
 struct BalancePersistRecord
 {
@@ -65,7 +67,6 @@ struct BalancePersistRecord
   float kp;
   float ki;
   float kd;
-  float integral_limit;
   float angle_gain;
   float angular_rate_gain;
   float speed_gain;
@@ -111,7 +112,6 @@ static BalancePersistRecord BalancePersistFromConfig(const BalanceConfig &config
   record.kp = config.pid.kp;
   record.ki = config.pid.ki;
   record.kd = config.pid.kd;
-  record.integral_limit = config.pid.integral_limit;
   record.angle_gain = config.state_feedback.angle_gain;
   record.angular_rate_gain = config.state_feedback.angular_rate_gain;
   record.speed_gain = config.state_feedback.speed_gain;
@@ -136,7 +136,6 @@ static uint8_t BalancePersistRecordValid(const BalancePersistRecord &record)
                    isfinite(record.tilt_cutoff_deg) &&
                    isfinite(record.tilt_recover_deg) &&
                    isfinite(record.kp) && isfinite(record.ki) && isfinite(record.kd) &&
-                   isfinite(record.integral_limit) &&
                    record.crc == BalancePersistCrc(record));
 }
 
@@ -163,7 +162,7 @@ static uint8_t BalancePersistLoad(BalanceConfig *config,
   config->tilt_recover_deg = record.tilt_recover_deg;
   config->stale_timeout_ms = record.stale_timeout_ms;
   config->invert_output = (uint8_t)(record.invert_output != 0U);
-  config->pid = {record.kp, record.ki, record.kd, record.integral_limit};
+  config->pid = {record.kp, record.ki, record.kd};
   config->state_feedback = {record.angle_gain, record.angular_rate_gain,
                              record.speed_gain, record.position_gain};
   *min_start = (uint8_t)((record.min_start_percent > 100U) ? 100U : record.min_start_percent);
@@ -250,14 +249,14 @@ static void SetStatusLedForBalance(const BalanceOutput &balance_output,
 static void BalanceLogConfig()
 {
   const BalanceConfig &c = g_balance_manager.config();
-  LOGI("BALCFG", "alg=%s en=%u target_cdeg=%ld max_cpercent=%ld boost_start_cdeg=%ld boost_max_cpercent=%ld cutoff_cdeg=%ld recover_cdeg=%ld kp_milli=%ld ki_milli=%ld kd_milli=%ld ilim_milli=%ld ag_milli=%ld rg_milli=%ld sg_milli=%ld pg_milli=%ld invert=%u",
+  LOGI("BALCFG", "alg=%s en=%u target_cdeg=%ld max_cpercent=%ld boost_start_cdeg=%ld boost_max_cpercent=%ld cutoff_cdeg=%ld recover_cdeg=%ld kp_milli=%ld ki_milli=%ld kd_milli=%ld ag_milli=%ld rg_milli=%ld sg_milli=%ld pg_milli=%ld invert=%u",
        BalanceManager::AlgorithmName(c.algorithm),
        (unsigned int)g_balance_manager.enabled(),
        (long)(c.target_angle_deg * 100.0f), (long)(c.max_output_percent * 100.0f),
        (long)(c.boost_start_deg * 100.0f), (long)(c.boost_max_output_percent * 100.0f),
        (long)(c.tilt_cutoff_deg * 100.0f), (long)(c.tilt_recover_deg * 100.0f),
        (long)(c.pid.kp * 1000.0f), (long)(c.pid.ki * 1000.0f),
-       (long)(c.pid.kd * 1000.0f), (long)(c.pid.integral_limit * 1000.0f),
+       (long)(c.pid.kd * 1000.0f),
        (long)(c.state_feedback.angle_gain * 1000.0f),
        (long)(c.state_feedback.angular_rate_gain * 1000.0f),
        (long)(c.state_feedback.speed_gain * 1000.0f),
@@ -471,7 +470,6 @@ static void ProcessBalanceCommand(char *command)
     else if (strncmp(token, "kp=", 3) == 0) invalid_value |= (uint8_t)(CommandValue(token, &config.pid.kp) == 0U);
     else if (strncmp(token, "ki=", 3) == 0) invalid_value |= (uint8_t)(CommandValue(token, &config.pid.ki) == 0U);
     else if (strncmp(token, "kd=", 3) == 0) invalid_value |= (uint8_t)(CommandValue(token, &config.pid.kd) == 0U);
-    else if (strncmp(token, "ilim=", 5) == 0) invalid_value |= (uint8_t)(CommandValue(token, &config.pid.integral_limit) == 0U);
     else if (strncmp(token, "ag=", 3) == 0) invalid_value |= (uint8_t)(CommandValue(token, &config.state_feedback.angle_gain) == 0U);
     else if (strncmp(token, "rg=", 3) == 0) invalid_value |= (uint8_t)(CommandValue(token, &config.state_feedback.angular_rate_gain) == 0U);
     else if (strncmp(token, "sg=", 3) == 0) invalid_value |= (uint8_t)(CommandValue(token, &config.state_feedback.speed_gain) == 0U);
@@ -497,7 +495,7 @@ static void ProcessBalanceCommand(char *command)
       config.tilt_cutoff_deg < 5.0f || config.tilt_cutoff_deg > 89.0f ||
       config.tilt_recover_deg < 0.5f || config.tilt_recover_deg >= config.tilt_cutoff_deg ||
       config.pid.kp < 0.0f || config.pid.ki < 0.0f || config.pid.kd < 0.0f ||
-      config.pid.integral_limit < 0.0f || config.state_feedback.angle_gain < 0.0f ||
+      config.state_feedback.angle_gain < 0.0f ||
       config.state_feedback.angular_rate_gain < 0.0f || config.state_feedback.speed_gain < 0.0f ||
       config.state_feedback.position_gain < 0.0f)
   {
@@ -694,7 +692,7 @@ extern "C" void AppMain_Loop(void)
                                                 kComplementaryGyroWeight);
       /* Roll theo quy ước cơ khí của xe dùng filtered_roll; tốc độ góc tương
          ứng vẫn là gyro-X. */
-      g_balance_input.angle_deg = kBalanceAngleSign * g_imu.filtered_roll_deg;
+      g_balance_input.angle_deg = kBalanceAngleSign * g_imu.filtered_roll_deg + kBalanceRollOffsetDeg;
       g_balance_input.angular_rate_dps = kBalanceGyroSign * g_imu.gyro_dps[0];
       g_balance_input.left_speed = WheelEncoder_GetSpeed(&g_left_encoder);
       g_balance_input.right_speed = WheelEncoder_GetSpeed(&g_right_encoder);
@@ -705,7 +703,7 @@ extern "C" void AppMain_Loop(void)
       /* Tự kích hoạt khi IMU hợp lệ và xe còn trong vùng an toàn. Khi góc
          vượt cutoff, BalanceManager sẽ latch fault và phía dưới dừng motor. */
       if (g_balance_enable_requested != 0U &&
-           fabsf(g_balance_manager.config().target_angle_deg - g_imu.filtered_roll_deg) <
+           fabsf(g_balance_manager.config().target_angle_deg - g_balance_input.angle_deg) <
                 g_balance_manager.config().tilt_cutoff_deg)
       {
         g_balance_manager.setEnabled(1U);
@@ -735,7 +733,7 @@ extern "C" void AppMain_Loop(void)
         0x20948U,
         200U,
         "roll_cdeg=%ld pitch_cdeg=%ld gyroX_cdps=%ld gyroY_cdps=%ld gyroZ_cdps=%ld ax_mg=%ld ay_mg=%ld az_mg=%ld",
-         (long)(g_imu.filtered_roll_deg * 100.0f),
+         (long)(g_balance_input.angle_deg * 100.0f),
         (long)(g_imu.pitch_deg * 100.0f),
         (long)(g_imu.gyro_dps[0] * 100.0f),
         (long)(g_imu.gyro_dps[1] * 100.0f),

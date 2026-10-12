@@ -115,7 +115,7 @@ void UartLogger::log(LogLevel level, const char *tag, const char *fmt, ...)
 {
   va_list args;
   int written;
-  char message[192];
+  char message[448];
 
   if ((fmt == NULL) || (canLog(level) == 0U))
   {
@@ -139,7 +139,7 @@ void UartLogger::logRateLimited(LogLevel level, const char *tag, uint32_t key, u
 {
   va_list args;
   int written;
-  char message[192];
+  char message[448];
   uint32_t now_ms;
 
   if ((fmt == NULL) || (canLog(level) == 0U))
@@ -263,7 +263,7 @@ void UartLogger::writeMessage(LogLevel level, const char *tag, const char *msg)
 {
   int prefix_len;
   uint32_t now_ms;
-  char line[256];
+  char line[480];
   const char *safe_tag = (tag != NULL) ? tag : "LOG";
 
   now_ms = HAL_GetTick();
